@@ -1,0 +1,23 @@
+package com.classroom.model;
+
+public enum MessageType {
+    AUTH_REQUEST,        // Student → Teacher: join request with student name
+    AUTH_SUCCESS,        // Teacher → Student: join accepted
+    AUTH_FAIL,           // Teacher → Student: join rejected
+    STUDENT_LIST_UPDATE, // Teacher → All: updated list of connected student names
+    DISCONNECT,          // Either direction: graceful disconnect notice
+    HEARTBEAT,           // Either direction: keep-alive ping (Phase 5 use)
+
+    // Phase 2 — Whiteboard & Annotation
+    WHITEBOARD_STROKE,   // Teacher → All Students: StrokeData payload for whiteboard layer
+    WHITEBOARD_CLEAR,    // Teacher → All Students: null payload, clear whiteboard canvas
+    ANNOTATION_STROKE,   // Teacher → All Students: StrokeData payload for annotation layer
+    ANNOTATION_CLEAR,    // Teacher → All Students: null payload, clear annotation canvas
+    UNDO,                // Teacher → All Students: null payload, undo last action
+    REDO,                // Teacher → All Students: null payload, redo last undone action
+    CANVAS_RESIZE,       // Teacher → All Students: double[] {w, h} payload, resize canvas
+    SHAPE_ADD,           // Teacher → All Students: ShapeData payload, new shape placed
+    SHAPE_UPDATE,        // Teacher → All Students: ShapeData payload, shape moved/resized
+    SHAPE_REMOVE,        // Teacher → All Students: String id payload, shape deleted
+    FULL_STATE           // Teacher → New Student: WhiteboardPane.FullState snapshot for late-join sync
+}
