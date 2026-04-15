@@ -20,7 +20,9 @@ public class TeacherServer {
     private final List<ClientHandler> clients;  // synchronized list
     private volatile boolean running;
     private final Runnable onClientListChanged; // UI callback — called on every join/leave
-    private Supplier<Message> stateSupplier;    // provides FULL_STATE snapshot for late-joining students
+    private Supplier<Message> stateSupplier;       // provides FULL_STATE snapshot for whiteboard
+    private Supplier<Message> pptStateSupplier;    // provides current PPT slide
+    private Supplier<Message> pptWhiteboardStateSupplier; // provides FULL_STATE for PPT whiteboard
 
     public TeacherServer(int port, Runnable onClientListChanged) {
         this.port = port;
@@ -31,6 +33,15 @@ public class TeacherServer {
     /** Set after construction, once the WhiteboardPane exists in TeacherUI. */
     public void setStateSupplier(Supplier<Message> stateSupplier) {
         this.stateSupplier = stateSupplier;
+    }
+
+    /** Set after construction, once PptService is initialised in TeacherUI. */
+    public void setPptStateSupplier(Supplier<Message> pptStateSupplier) {
+        this.pptStateSupplier = pptStateSupplier;
+    }
+
+    public void setPptWhiteboardStateSupplier(Supplier<Message> pptWhiteboardStateSupplier) {
+        this.pptWhiteboardStateSupplier = pptWhiteboardStateSupplier;
     }
 
     /**
@@ -104,15 +115,37 @@ public class TeacherServer {
      * Sends a full-state snapshot ONLY to this new client, then broadcasts the updated student list.
      */
     public void addClient(ClientHandler handler) {
-        // Send full state snapshot to THIS student only (before adding to broadcast list)
+        // 1. Send whiteboard full state to this student only (existing)
         if (stateSupplier != null) {
             try {
                 Message stateMsg = stateSupplier.get();
                 if (stateMsg != null) handler.send(stateMsg);
             } catch (Exception e) {
-                System.err.println("[TeacherServer] Failed to send full state to " + handler.getStudentName() + ": " + e.getMessage());
+                System.err.println("[TeacherServer] Failed to send whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
             }
         }
+
+        // 2. Send current PPT slide to this student only
+        if (pptStateSupplier != null) {
+            try {
+                Message pptMsg = pptStateSupplier.get();
+                if (pptMsg != null) handler.send(pptMsg);
+            } catch (Exception e) {
+                System.err.println("[TeacherServer] Failed to send PPT state to " + handler.getStudentName() + ": " + e.getMessage());
+            }
+        }
+
+        // 3. Send PPT whiteboard full state to this student only
+        if (pptWhiteboardStateSupplier != null) {
+            try {
+                Message pptFullStateMsg = pptWhiteboardStateSupplier.get();
+                if (pptFullStateMsg != null) handler.send(pptFullStateMsg);
+            } catch (Exception e) {
+                System.err.println("[TeacherServer] Failed to send PPT whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
+            }
+        }
+
+        // 4. Add to broadcast list and notify UI (existing)
         clients.add(handler);
         broadcastStudentList();
         Platform.runLater(onClientListChanged);

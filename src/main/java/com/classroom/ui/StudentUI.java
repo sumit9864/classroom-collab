@@ -3,16 +3,21 @@ package com.classroom.ui;
 import com.classroom.client.StudentClient;
 import com.classroom.model.Message;
 import com.classroom.model.ShapeData;
+import com.classroom.model.SlideData;
 import com.classroom.model.StrokeData;
 import com.classroom.ui.WhiteboardPane.FullState;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
+
+import java.io.ByteArrayInputStream;
 
 public class StudentUI {
 
@@ -20,6 +25,13 @@ public class StudentUI {
     private StudentClient client;
     private final Label statusLabel;
     private WhiteboardPane whiteboardPane;
+
+    // Phase 3 — PPT instance fields
+    private ImageView pptImageView;
+    private Tab pptTab;
+    private TabPane tabPane;
+    private StackPane pptSlidePanel;
+    private WhiteboardPane pptWhiteboardPane;
 
     public StudentUI(Stage stage, StudentClient client) {
         this.stage = stage;
@@ -54,34 +66,70 @@ public class StudentUI {
         topBar.setPadding(new Insets(10));
         topBar.setStyle("-fx-background-color: #2b2b2b;");
 
-        // ── CENTER — WhiteboardPane (read-only student mode) ───────────────
+        // ── Whiteboard pane (read-only student mode) ───────────────────────
         whiteboardPane = new WhiteboardPane(false, null);
 
-        // Keep statusLabel visible as a small bottom bar
+        // ── Bottom status bar ──────────────────────────────────────────────
         HBox statusBar = new HBox(10);
         statusBar.setAlignment(Pos.CENTER_LEFT);
         statusBar.setPadding(new Insets(4, 10, 4, 10));
         statusBar.setStyle("-fx-background-color: #f0f0f0; -fx-border-color: #ccc; -fx-border-width: 1 0 0 0;");
-        
+
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
         Button zoomInBtn = new Button("Zoom In");
-        zoomInBtn.setOnAction(e -> whiteboardPane.setZoom(whiteboardPane.getZoom() + 0.1));
+        zoomInBtn.setOnAction(e -> {
+            WhiteboardPane active = tabPane.getSelectionModel().getSelectedItem() == pptTab ? pptWhiteboardPane : whiteboardPane;
+            active.setZoom(active.getZoom() + 0.1);
+        });
 
         Button zoomOutBtn = new Button("Zoom Out");
-        zoomOutBtn.setOnAction(e -> whiteboardPane.setZoom(whiteboardPane.getZoom() - 0.1));
+        zoomOutBtn.setOnAction(e -> {
+            WhiteboardPane active = tabPane.getSelectionModel().getSelectedItem() == pptTab ? pptWhiteboardPane : whiteboardPane;
+            active.setZoom(active.getZoom() - 0.1);
+        });
 
         statusBar.getChildren().addAll(statusLabel, spacer, zoomInBtn, zoomOutBtn);
 
+        // ── Tab 1: Whiteboard ──────────────────────────────────────────────
         javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
-        ScrollPane scroller = new ScrollPane(canvasGroup);
-        scroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
+        ScrollPane wbScroller = new ScrollPane(canvasGroup);
+        wbScroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
+        Tab whiteboardTab = new Tab("Whiteboard", wbScroller);
+        whiteboardTab.setClosable(false);
+
+        // ── Tab 2: PPT Slide ───────────────────────────────────────────────
+        pptImageView = new ImageView();
+        pptImageView.setPreserveRatio(true);
+        pptImageView.setSmooth(true);
+
+        pptWhiteboardPane = new WhiteboardPane(false, null);
+        pptWhiteboardPane.setTransparentBackground(true);
+
+        Label waitingLabel = new Label("Waiting for PPT slide from teacher…");
+        waitingLabel.setStyle("-fx-text-fill: #888; -fx-font-size: 15;");
+
+        pptSlidePanel = new StackPane();
+        pptSlidePanel.setStyle("-fx-background-color: white;");
+        pptSlidePanel.setAlignment(Pos.CENTER);
+        pptSlidePanel.getChildren().add(waitingLabel);
+
+        // Bind ImageView size to container so it fills all available space
+        pptImageView.fitWidthProperty().bind(pptSlidePanel.widthProperty());
+        pptImageView.fitHeightProperty().bind(pptSlidePanel.heightProperty());
+
+        pptTab = new Tab("PPT Slide", pptSlidePanel);
+        pptTab.setClosable(false);
+
+        // ── TabPane ────────────────────────────────────────────────────────
+        tabPane = new TabPane(whiteboardTab, pptTab);
+        tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         // ── Root layout ────────────────────────────────────────────────────
         BorderPane root = new BorderPane();
         root.setTop(topBar);
-        root.setCenter(scroller);
+        root.setCenter(tabPane);
         root.setBottom(statusBar);
 
         stage.setOnCloseRequest(e -> {
@@ -98,9 +146,11 @@ public class StudentUI {
      * Already on the FX thread (dispatched via Platform.runLater in StudentClient).
      */
     public void handleMessage(Message msg) {
+        boolean isPpt = "Teacher_PPT".equals(msg.getSenderName());
+        WhiteboardPane targetPane = isPpt ? pptWhiteboardPane : whiteboardPane;
+
         switch (msg.getType()) {
             case STUDENT_LIST_UPDATE:
-                // No UI change needed in Phase 1 — log it
                 System.out.println("[StudentUI] Student list updated: " + msg.getPayload());
                 break;
             case DISCONNECT:
@@ -114,55 +164,69 @@ public class StudentUI {
 
             // Phase 2 — Whiteboard & Annotation messages
             case WHITEBOARD_STROKE:
-                if (whiteboardPane != null)
-                    whiteboardPane.applyStroke((StrokeData) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.applyStroke((StrokeData) msg.getPayload());
                 break;
             case ANNOTATION_STROKE:
-                if (whiteboardPane != null)
-                    whiteboardPane.applyStroke((StrokeData) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.applyStroke((StrokeData) msg.getPayload());
                 break;
             case WHITEBOARD_CLEAR:
-                if (whiteboardPane != null)
-                    whiteboardPane.clearWhiteboard();
+                if (targetPane != null)
+                    targetPane.clearWhiteboard();
                 break;
             case ANNOTATION_CLEAR:
-                if (whiteboardPane != null)
-                    whiteboardPane.clearAnnotations();
+                if (targetPane != null)
+                    targetPane.clearAnnotations();
                 break;
             case UNDO:
-                if (whiteboardPane != null)
-                    whiteboardPane.undo();
+                if (targetPane != null)
+                    targetPane.undo();
                 break;
             case REDO:
-                if (whiteboardPane != null)
-                    whiteboardPane.redo();
+                if (targetPane != null)
+                    targetPane.redo();
                 break;
             case CANVAS_RESIZE:
-                if (whiteboardPane != null) {
+                if (targetPane != null) {
                     double[] size = (double[]) msg.getPayload();
-                    whiteboardPane.setCanvasSize(size[0], size[1]);
+                    targetPane.setCanvasSize(size[0], size[1]);
                 }
                 break;
             case SHAPE_ADD:
-                if (whiteboardPane != null)
-                    whiteboardPane.addShape((ShapeData) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.addShape((ShapeData) msg.getPayload());
                 break;
             case SHAPE_UPDATE:
-                if (whiteboardPane != null)
-                    whiteboardPane.updateShape((ShapeData) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.updateShape((ShapeData) msg.getPayload());
                 break;
             case SHAPE_REMOVE:
-                if (whiteboardPane != null)
-                    whiteboardPane.removeShape((String) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.removeShape((String) msg.getPayload());
                 break;
             case FULL_STATE:
-                if (whiteboardPane != null)
-                    whiteboardPane.applyFullState((FullState) msg.getPayload());
+                if (targetPane != null)
+                    targetPane.applyFullState((FullState) msg.getPayload());
+                break;
+
+            // Phase 3 — PPT Sharing
+            case PPT_SLIDE:
+                SlideData sd = (SlideData) msg.getPayload();
+                Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
+                pptImageView.setImage(fxImg);
+                // Replace waiting label with image and overlay
+                if (!pptSlidePanel.getChildren().contains(pptImageView)) {
+                    pptSlidePanel.getChildren().clear();
+                    javafx.scene.Group overlayGroup = new javafx.scene.Group(pptWhiteboardPane);
+                    pptSlidePanel.getChildren().addAll(pptImageView, overlayGroup);
+                }
+                // Auto-switch student to PPT tab
+                tabPane.getSelectionModel().select(pptTab);
                 break;
 
             default:
                 System.out.println("[StudentUI] Unhandled message: " + msg.getType());
-                // TODO: Phase 3+ will handle PPT, CODE messages here
                 break;
         }
     }

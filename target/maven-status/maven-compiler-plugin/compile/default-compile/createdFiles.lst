@@ -9,6 +9,7 @@ com\classroom\ui\WhiteboardPane.class
 com\classroom\util\NetworkUtil.class
 com\classroom\model\ShapeData$ShapeType.class
 com\classroom\server\ClientHandler$1.class
+com\classroom\model\SlideData.class
 com\classroom\ui\TeacherUI.class
 com\classroom\model\Message.class
 com\classroom\ui\WhiteboardPane$SelectAction.class
@@ -17,6 +18,7 @@ com\classroom\ui\WhiteboardPane$BoardAction.class
 com\classroom\model\MessageType.class
 com\classroom\server\TeacherServer.class
 com\classroom\client\StudentClient.class
+com\classroom\util\PptService.class
 com\classroom\ui\WhiteboardPane$FullState.class
 com\classroom\model\StrokeData.class
 com\classroom\ui\StudentUI.class

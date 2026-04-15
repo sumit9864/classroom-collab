@@ -74,6 +74,12 @@
             <option>java.base/java.lang=ALL-UNNAMED</option>
             <option>--add-opens</option>
             <option>java.base/java.io=ALL-UNNAMED</option>
+            <option>--add-opens</option>
+            <option>java.desktop/java.awt=ALL-UNNAMED</option>
+            <option>--add-opens</option>
+            <option>java.desktop/sun.awt=ALL-UNNAMED</option>
+            <option>--add-opens</option>
+            <option>java.desktop/sun.java2d=ALL-UNNAMED</option>
           </options>
         </configuration>
       </plugin>

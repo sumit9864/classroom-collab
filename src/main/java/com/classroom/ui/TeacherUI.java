@@ -2,19 +2,26 @@ package com.classroom.ui;
 
 import com.classroom.model.Message;
 import com.classroom.model.MessageType;
+import com.classroom.model.SlideData;
 import com.classroom.server.TeacherServer;
 import com.classroom.ui.WhiteboardPane.DrawMode;
+import com.classroom.util.PptService;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
+import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.util.List;
 
 public class TeacherUI {
@@ -23,6 +30,37 @@ public class TeacherUI {
     private TeacherServer server;
     private final ListView<String> studentListView;
     private WhiteboardPane whiteboardPane;
+
+    // Phase 3 — PPT fields
+    private PptService pptService;
+    private ImageView pptImageView;
+    private Label slideCountLabel;
+    private Button prevSlideBtn;
+    private Button nextSlideBtn;
+
+    // Promoted to instance fields so the tab-switch listener can show/hide them
+    private HBox toolbar;
+    private HBox shapeToolbar;
+    
+    // PPT Whiteboard overlay
+    private WhiteboardPane pptWhiteboardPane;
+    private TabPane tabPane;
+    private Tab whiteboardTab;
+    private Tab pptTab;
+
+    private WhiteboardPane getActivePane() {
+        if (tabPane != null && pptTab != null && tabPane.getSelectionModel().getSelectedItem() == pptTab) {
+            return pptWhiteboardPane;
+        }
+        return whiteboardPane;
+    }
+
+    private String getActiveSender() {
+        if (tabPane != null && pptTab != null && tabPane.getSelectionModel().getSelectedItem() == pptTab) {
+            return "Teacher_PPT";
+        }
+        return "Teacher";
+    }
 
     public TeacherUI(Stage stage, TeacherServer server) {
         this.stage = stage;
@@ -46,6 +84,7 @@ public class TeacherUI {
 
         Button stopButton = new Button("Stop Session");
         stopButton.setOnAction(e -> {
+            if (pptService != null) pptService.shutdown();
             if (server != null) server.stop();
             stage.close();
         });
@@ -83,25 +122,50 @@ public class TeacherUI {
                 id    -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_REMOVE, id, "Teacher")); }
         );
 
+        // ── PPT Whiteboard overlay ─────────────────────────────────────────
+        pptWhiteboardPane = new WhiteboardPane(true, stroke -> {
+            if (server != null) {
+                MessageType type = stroke.isAnnotation()
+                        ? MessageType.ANNOTATION_STROKE
+                        : MessageType.WHITEBOARD_STROKE;
+                server.broadcast(new Message(type, stroke, "Teacher_PPT"));
+            }
+        });
+        pptWhiteboardPane.setShapeCallbacks(
+                shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_ADD, shape, "Teacher_PPT")); },
+                shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_UPDATE, shape, "Teacher_PPT")); },
+                id    -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_REMOVE, id, "Teacher_PPT")); }
+        );
+        pptWhiteboardPane.setTransparentBackground(true);
+
         // Wire state supplier so late-joining students get a full canvas snapshot
         if (server != null) {
             server.setStateSupplier(() ->
                 new Message(MessageType.FULL_STATE, whiteboardPane.getFullState(), "Teacher"));
+                
+            server.setPptWhiteboardStateSupplier(() ->
+                new Message(MessageType.FULL_STATE, pptWhiteboardPane.getFullState(), "Teacher_PPT"));
         }
 
         // Apply the default "Large" canvas size immediately
         whiteboardPane.setCanvasSize(1280, 720);
+        pptWhiteboardPane.setCanvasSize(1280, 720);
 
-        // ── Drawing toolbar ────────────────────────────────────────────────
+        // ── Drawing toolbar (instance field) ──────────────────────────────
         ColorPicker colorPicker = new ColorPicker(Color.BLACK);
-        colorPicker.setOnAction(e -> whiteboardPane.setCurrentColor(colorPicker.getValue()));
+        colorPicker.setOnAction(e -> {
+            whiteboardPane.setCurrentColor(colorPicker.getValue());
+            pptWhiteboardPane.setCurrentColor(colorPicker.getValue());
+        });
 
         Slider widthSlider = new Slider(1, 12, 2);
         widthSlider.setShowTickLabels(true);
         widthSlider.setMajorTickUnit(4);
         widthSlider.setPrefWidth(100);
-        widthSlider.valueProperty().addListener((obs, oldVal, newVal) ->
-                whiteboardPane.setStrokeWidth(newVal.doubleValue()));
+        widthSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
+            whiteboardPane.setStrokeWidth(newVal.doubleValue());
+            pptWhiteboardPane.setStrokeWidth(newVal.doubleValue());
+        });
 
         ComboBox<String> sizeCombo = new ComboBox<>();
         sizeCombo.getItems().addAll(
@@ -117,10 +181,12 @@ public class TeacherUI {
             if (val.contains("1024x768")) { w = 1024; h = 768; }
             else if (val.contains("1280x720")) { w = 1280; h = 720; }
             else if (val.contains("1920x1080")) { w = 1920; h = 1080; }
-            
+
             whiteboardPane.setCanvasSize(w, h);
+            pptWhiteboardPane.setCanvasSize(w, h);
             if (server != null) {
                 server.broadcast(new Message(MessageType.CANVAS_RESIZE, new double[]{w, h}, "Teacher"));
+                server.broadcast(new Message(MessageType.CANVAS_RESIZE, new double[]{w, h}, "Teacher_PPT"));
             }
         });
 
@@ -133,41 +199,43 @@ public class TeacherUI {
 
         modeGroup.selectedToggleProperty().addListener((obs, oldT, newT) -> {
             whiteboardPane.setAnnotationMode(annotateMode.isSelected());
+            pptWhiteboardPane.setAnnotationMode(annotateMode.isSelected());
         });
 
         Button undoBtn = new Button("Undo");
         undoBtn.setOnAction(e -> {
-            whiteboardPane.undo();
-            if (server != null) server.broadcast(new Message(MessageType.UNDO, null, "Teacher"));
+            getActivePane().undo();
+            if (server != null) server.broadcast(new Message(MessageType.UNDO, null, getActiveSender()));
         });
 
         Button redoBtn = new Button("Redo");
         redoBtn.setOnAction(e -> {
-            whiteboardPane.redo();
-            if (server != null) server.broadcast(new Message(MessageType.REDO, null, "Teacher"));
+            getActivePane().redo();
+            if (server != null) server.broadcast(new Message(MessageType.REDO, null, getActiveSender()));
         });
 
         Button clearBoard = new Button("Clear Board");
         clearBoard.setOnAction(e -> {
-            whiteboardPane.clearWhiteboard();
+            getActivePane().clearWhiteboard();
             if (server != null)
-                server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, "Teacher"));
+                server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, getActiveSender()));
         });
 
         Button clearAnnotations = new Button("Clear Annotations");
         clearAnnotations.setOnAction(e -> {
-            whiteboardPane.clearAnnotations();
+            getActivePane().clearAnnotations();
             if (server != null)
-                server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, "Teacher"));
+                server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, getActiveSender()));
         });
 
         Button zoomInBtn = new Button("Zoom In");
-        zoomInBtn.setOnAction(e -> whiteboardPane.setZoom(whiteboardPane.getZoom() + 0.1));
+        zoomInBtn.setOnAction(e -> getActivePane().setZoom(getActivePane().getZoom() + 0.1));
 
         Button zoomOutBtn = new Button("Zoom Out");
-        zoomOutBtn.setOnAction(e -> whiteboardPane.setZoom(whiteboardPane.getZoom() - 0.1));
+        zoomOutBtn.setOnAction(e -> getActivePane().setZoom(getActivePane().getZoom() - 0.1));
 
-        HBox toolbar = new HBox(10,
+        // Promoted to instance field
+        this.toolbar = new HBox(10,
                 new Label("Size:"), sizeCombo,
                 new Label("Color:"), colorPicker,
                 new Label("Width:"), widthSlider,
@@ -176,7 +244,7 @@ public class TeacherUI {
         toolbar.setPadding(new Insets(6, 10, 6, 10));
         toolbar.setStyle("-fx-background-color: #ececec; -fx-border-color: #ccc; -fx-border-width: 0 0 1 0;");
 
-        // ── Shape tools toolbar ────────────────────────────────────────────
+        // ── Shape tools toolbar (instance field) ──────────────────────────
         ToggleGroup shapeGroup = new ToggleGroup();
         ToggleButton freehandTb  = new ToggleButton("Freehand");
         ToggleButton eraserTb    = new ToggleButton("Eraser");
@@ -194,14 +262,18 @@ public class TeacherUI {
 
         shapeGroup.selectedToggleProperty().addListener((obs, old, newT) -> {
             if (newT == null) { freehandTb.setSelected(true); return; }
-            if (newT == freehandTb) whiteboardPane.setDrawMode(DrawMode.FREEHAND);
-            else if (newT == eraserTb)  whiteboardPane.setDrawMode(DrawMode.ERASER);
-            else if (newT == rectTb)    whiteboardPane.setDrawMode(DrawMode.SHAPE_RECT);
-            else if (newT == ellipseTb) whiteboardPane.setDrawMode(DrawMode.SHAPE_ELLIPSE);
-            else if (newT == lineTb)    whiteboardPane.setDrawMode(DrawMode.SHAPE_LINE);
-            else if (newT == arrowTb)   whiteboardPane.setDrawMode(DrawMode.SHAPE_ARROW);
-            else if (newT == textTb)    whiteboardPane.setDrawMode(DrawMode.SHAPE_TEXT);
-            else if (newT == selectTb)  whiteboardPane.setDrawMode(DrawMode.SELECT);
+            DrawMode m = DrawMode.FREEHAND;
+            if (newT == freehandTb)      m = DrawMode.FREEHAND;
+            else if (newT == eraserTb)   m = DrawMode.ERASER;
+            else if (newT == rectTb)     m = DrawMode.SHAPE_RECT;
+            else if (newT == ellipseTb)  m = DrawMode.SHAPE_ELLIPSE;
+            else if (newT == lineTb)     m = DrawMode.SHAPE_LINE;
+            else if (newT == arrowTb)    m = DrawMode.SHAPE_ARROW;
+            else if (newT == textTb)     m = DrawMode.SHAPE_TEXT;
+            else if (newT == selectTb)   m = DrawMode.SELECT;
+            
+            whiteboardPane.setDrawMode(m);
+            pptWhiteboardPane.setDrawMode(m);
         });
 
         selectTb.setStyle("-fx-background-color: #2980b9; -fx-text-fill: white;");
@@ -212,9 +284,10 @@ public class TeacherUI {
 
         Button deleteShapeBtn = new Button("Delete Shape");
         deleteShapeBtn.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
-        deleteShapeBtn.setOnAction(e -> whiteboardPane.deleteSelectedShape());
+        deleteShapeBtn.setOnAction(e -> getActivePane().deleteSelectedShape());
 
-        HBox shapeToolbar = new HBox(8,
+        // Promoted to instance field
+        this.shapeToolbar = new HBox(8,
                 new Label("Draw:"),
                 freehandTb, eraserTb, rectTb, ellipseTb, lineTb, arrowTb, textTb, selectTb,
                 new Separator(),
@@ -223,20 +296,125 @@ public class TeacherUI {
         shapeToolbar.setPadding(new Insets(5, 10, 5, 10));
         shapeToolbar.setStyle("-fx-background-color: #e8e8f0; -fx-border-color: #ccc; -fx-border-width: 0 0 1 0;");
 
+        // ── Tab 1: Whiteboard ──────────────────────────────────────────────
+        javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
+        ScrollPane wbScroller = new ScrollPane(canvasGroup);
+        wbScroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
+        whiteboardTab = new Tab("Whiteboard", wbScroller);
+        whiteboardTab.setClosable(false);
+
+        // ── Tab 2: PPT Sharing ─────────────────────────────────────────────
+        Button loadPptBtn = new Button("Load PPTX…");
+        Label pptFileLabel = new Label("No file loaded");
+        pptFileLabel.setStyle("-fx-text-fill: #888;");
+
+        prevSlideBtn = new Button("← Prev");
+        prevSlideBtn.setDisable(true);
+        slideCountLabel = new Label("—");
+        nextSlideBtn = new Button("Next →");
+        nextSlideBtn.setDisable(true);
+
+        HBox pptControls = new HBox(10,
+                loadPptBtn, pptFileLabel,
+                new Separator(),
+                prevSlideBtn, slideCountLabel, nextSlideBtn);
+        pptControls.setAlignment(Pos.CENTER_LEFT);
+        pptControls.setPadding(new Insets(8, 12, 8, 12));
+        pptControls.setStyle("-fx-background-color: #ececec; -fx-border-color: #ccc; -fx-border-width: 0 0 1 0;");
+
+        pptImageView = new ImageView();
+        pptImageView.setPreserveRatio(true);
+        pptImageView.setSmooth(true);
+
+        // Group the overlay to not mess with scaling bounds during resize
+        javafx.scene.Group pptCanvasGroup = new javafx.scene.Group(pptWhiteboardPane);
+        
+        StackPane pptCenter = new StackPane(pptImageView, pptCanvasGroup);
+        pptCenter.setStyle("-fx-background-color: white;");
+        pptCenter.setAlignment(Pos.CENTER);
+
+        // Bind ImageView size to container so it fills all available space
+        pptImageView.fitWidthProperty().bind(pptCenter.widthProperty());
+        pptImageView.fitHeightProperty().bind(pptCenter.heightProperty());
+
+        VBox pptPanel = new VBox(pptControls, pptCenter);
+        VBox.setVgrow(pptCenter, Priority.ALWAYS);
+
+        pptTab = new Tab("PPT Sharing", pptPanel);
+        pptTab.setClosable(false);
+
+        // ── TabPane ────────────────────────────────────────────────────────
+        tabPane = new TabPane(whiteboardTab, pptTab);
+        tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+
+        // The toolbars are always visible now since drawing is enabled on both tabs
+
         // ── Root layout ────────────────────────────────────────────────────
         VBox topSection = new VBox(topBar, toolbar, shapeToolbar);
-
-        javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
-        ScrollPane scroller = new ScrollPane(canvasGroup);
-        scroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
 
         BorderPane root = new BorderPane();
         root.setTop(topSection);
         root.setLeft(leftPanel);
-        root.setCenter(scroller);
+        root.setCenter(tabPane);
 
-        // Close handler
+        // ── PptService init + supplier wiring ──────────────────────────────
+        pptService = new PptService();
+        if (server != null) {
+            server.setPptStateSupplier(() ->
+                pptService.isLoaded()
+                    ? new Message(MessageType.PPT_SLIDE, pptService.getCurrentSlideData(), "Teacher")
+                    : null);
+        }
+
+        // ── Load PPTX button ───────────────────────────────────────────────
+        loadPptBtn.setOnAction(e -> {
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Open PowerPoint File");
+            fc.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("PowerPoint Files", "*.pptx"));
+            File file = fc.showOpenDialog(stage);
+            if (file == null) return;
+
+            loadPptBtn.setDisable(true);
+            pptFileLabel.setText("Loading " + file.getName() + "…");
+            pptFileLabel.setStyle("-fx-text-fill: #555;");
+
+            pptService.loadAsync(file,
+                // onSuccess — called on FX thread
+                () -> {
+                    loadPptBtn.setDisable(false);
+                    pptFileLabel.setText(file.getName());
+                    pptFileLabel.setStyle("-fx-text-fill: #222;");
+                    displayAndBroadcastSlide(pptService.getCurrentSlideData());
+                    updateNavButtons();
+                },
+                // onError — called on FX thread
+                errorMsg -> {
+                    loadPptBtn.setDisable(false);
+                    pptFileLabel.setText("Failed to load");
+                    pptFileLabel.setStyle("-fx-text-fill: #c0392b;");
+                    Alert alert = new Alert(Alert.AlertType.ERROR);
+                    alert.setTitle("PPTX Load Error");
+                    alert.setHeaderText("Could not load the selected file");
+                    alert.setContentText(errorMsg);
+                    alert.showAndWait();
+                }
+            );
+        });
+
+        prevSlideBtn.setOnAction(e -> {
+            SlideData sd = pptService.prevSlide();
+            if (sd != null) { displayAndBroadcastSlide(sd); updateNavButtons(); }
+        });
+
+        nextSlideBtn.setOnAction(e -> {
+            SlideData sd = pptService.nextSlide();
+            if (sd != null) { displayAndBroadcastSlide(sd); updateNavButtons(); }
+        });
+
+        // ── Close handler ──────────────────────────────────────────────────
         stage.setOnCloseRequest(e -> {
+            if (pptService != null) pptService.shutdown();
             if (server != null) server.stop();
         });
 
@@ -248,6 +426,34 @@ public class TeacherUI {
         refreshStudentList();
     }
 
+    /** Displays a slide image locally and broadcasts it to all students. */
+    private void displayAndBroadcastSlide(SlideData sd) {
+        if (sd == null) return;
+        
+        // Clear PPT drawings upon setting a new slide
+        pptWhiteboardPane.clearWhiteboard();
+        pptWhiteboardPane.clearAnnotations();
+        if (server != null) {
+            server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, "Teacher_PPT"));
+            server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, "Teacher_PPT"));
+        }
+
+        Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
+        pptImageView.setImage(fxImg);
+        if (server != null) {
+            server.broadcast(new Message(MessageType.PPT_SLIDE, sd, "Teacher"));
+        }
+    }
+
+    /** Enables/disables Prev and Next buttons based on current slide position. */
+    private void updateNavButtons() {
+        int idx   = pptService.getCurrentIndex();
+        int total = pptService.getTotalSlides();
+        prevSlideBtn.setDisable(idx <= 0);
+        nextSlideBtn.setDisable(idx >= total - 1);
+        slideCountLabel.setText((idx + 1) + " / " + total);
+    }
+
     /**
      * Refreshes the student ListView from the server's current connected list.
      * Safe to call from any thread — always dispatches to the FX thread.
@@ -255,8 +461,6 @@ public class TeacherUI {
      */
     public void refreshStudentList() {
         List<String> names = (server != null) ? server.getConnectedNames() : List.of();
-        Platform.runLater(() -> {
-            studentListView.getItems().setAll(names);
-        });
+        Platform.runLater(() -> studentListView.getItems().setAll(names));
     }
 }

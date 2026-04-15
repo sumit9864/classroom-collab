@@ -42,6 +42,7 @@ public class WhiteboardPane extends StackPane {
     private Color  currentColor    = Color.BLACK;
     private double strokeWidth     = 2.0;
     private double zoomLevel       = 1.0;
+    private boolean isTransparentBackground = false;
 
     // ── Unified Action History ────────────────────────────────────────────────
     public static class BoardAction {
@@ -724,8 +725,12 @@ public class WhiteboardPane extends StackPane {
         // Resize canvas first
         setCanvasSize(state.canvasW, state.canvasH);
         // Clear everything
-        wbGc.setFill(Color.WHITE);
-        wbGc.fillRect(0, 0, state.canvasW, state.canvasH);
+        if (isTransparentBackground) {
+            wbGc.clearRect(0, 0, state.canvasW, state.canvasH);
+        } else {
+            wbGc.setFill(Color.WHITE);
+            wbGc.fillRect(0, 0, state.canvasW, state.canvasH);
+        }
         annGc.clearRect(0, 0, state.canvasW, state.canvasH);
         annGc.beginPath();
         List<String> existing = new ArrayList<>(shapeDataMap.keySet());
@@ -814,8 +819,12 @@ public class WhiteboardPane extends StackPane {
     }
 
     public void clearWhiteboard() {
-        wbGc.setFill(Color.WHITE);
-        wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
+        if (isTransparentBackground) {
+            wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
+        } else {
+            wbGc.setFill(Color.WHITE);
+            wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
+        }
         history.removeIf(a -> !a.isAnnotation());
         redoStack.removeIf(a -> !a.isAnnotation());
         
@@ -892,8 +901,12 @@ public class WhiteboardPane extends StackPane {
 
     private void redrawAll() {
         if (getCanvasW() == 0 || getCanvasH() == 0) return;
-        wbGc.setFill(Color.WHITE);
-        wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
+        if (isTransparentBackground) {
+            wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
+        } else {
+            wbGc.setFill(Color.WHITE);
+            wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
+        }
         annGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         annGc.beginPath();
         for (BoardAction a : history) {
@@ -941,5 +954,15 @@ public class WhiteboardPane extends StackPane {
         if (level > 5.0) level = 5.0;
         this.zoomLevel = level;
         this.setScaleX(level); this.setScaleY(level);
+    }
+    
+    public void setTransparentBackground(boolean transparent) {
+        this.isTransparentBackground = transparent;
+        if (transparent) {
+            setStyle("-fx-background-color: transparent;");
+        } else {
+            setStyle("-fx-background-color: #e0e0e0;");
+        }
+        redrawAll();
     }
 }
