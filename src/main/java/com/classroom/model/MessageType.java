@@ -20,7 +20,11 @@ public enum MessageType {
     SHAPE_UPDATE,        // Teacher → All Students: ShapeData payload, shape moved/resized
     SHAPE_REMOVE,        // Teacher → All Students: String id payload, shape deleted
     FULL_STATE,          // Teacher → New Student: WhiteboardPane.FullState snapshot for late-join sync
+    STROKE_PROGRESS,     // Teacher → All Students: StrokeData payload for an in-progress stroke (never added to history)
 
     // Phase 3 — PPT Sharing
-    PPT_SLIDE            // Teacher → All Students: SlideData payload (PNG bytes + index + total)
+    PPT_SLIDE,           // Teacher → All Students: SlideData payload (PNG bytes + index + total)
+
+    // Phase 4 — Code Sharing
+    CODE_SHARE           // Teacher → All Students (and late-join sync): CodeData payload
 }

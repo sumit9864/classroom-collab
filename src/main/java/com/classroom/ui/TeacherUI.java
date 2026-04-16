@@ -1,5 +1,6 @@
 package com.classroom.ui;
 
+import com.classroom.model.CodeData;
 import com.classroom.model.Message;
 import com.classroom.model.MessageType;
 import com.classroom.model.SlideData;
@@ -23,6 +24,8 @@ import javafx.stage.Stage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.util.List;
+import javafx.animation.PauseTransition;
+import javafx.util.Duration;
 
 public class TeacherUI {
 
@@ -48,10 +51,14 @@ public class TeacherUI {
     private Tab whiteboardTab;
     private Tab pptTab;
 
+    // Phase 4 — Code Sharing fields
+    private Tab      codeTab;
+    private TextArea codeEditor;
+
     private WhiteboardPane getActivePane() {
-        if (tabPane != null && pptTab != null && tabPane.getSelectionModel().getSelectedItem() == pptTab) {
-            return pptWhiteboardPane;
-        }
+        Tab selected = tabPane.getSelectionModel().getSelectedItem();
+        if (pptTab  != null && selected == pptTab)  return pptWhiteboardPane;
+        if (codeTab != null && selected == codeTab) return null; // no canvas on code tab
         return whiteboardPane;
     }
 
@@ -118,9 +125,23 @@ public class TeacherUI {
         // Wire shape broadcast callbacks
         whiteboardPane.setShapeCallbacks(
                 shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_ADD, shape, "Teacher")); },
-                shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_UPDATE, shape, "Teacher")); },
+                shape -> {
+                    if (server != null) server.broadcastLatest(
+                        "SHAPE_UPDATE_" + shape.getId(),
+                        new Message(MessageType.SHAPE_UPDATE, shape, "Teacher")
+                    );
+                },
                 id    -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_REMOVE, id, "Teacher")); }
         );
+
+        whiteboardPane.setStrokeProgressCallback(stroke -> {
+            if (server != null) {
+                server.broadcastLatest(
+                    "STROKE_PROGRESS_Teacher",
+                    new Message(MessageType.STROKE_PROGRESS, stroke, "Teacher")
+                );
+            }
+        });
 
         // ── PPT Whiteboard overlay ─────────────────────────────────────────
         pptWhiteboardPane = new WhiteboardPane(true, stroke -> {
@@ -133,10 +154,24 @@ public class TeacherUI {
         });
         pptWhiteboardPane.setShapeCallbacks(
                 shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_ADD, shape, "Teacher_PPT")); },
-                shape -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_UPDATE, shape, "Teacher_PPT")); },
+                shape -> {
+                    if (server != null) server.broadcastLatest(
+                        "SHAPE_UPDATE_" + shape.getId(),
+                        new Message(MessageType.SHAPE_UPDATE, shape, "Teacher_PPT")
+                    );
+                },
                 id    -> { if (server != null) server.broadcast(new Message(MessageType.SHAPE_REMOVE, id, "Teacher_PPT")); }
         );
         pptWhiteboardPane.setTransparentBackground(true);
+
+        pptWhiteboardPane.setStrokeProgressCallback(stroke -> {
+            if (server != null) {
+                server.broadcastLatest(
+                    "STROKE_PROGRESS_Teacher_PPT",
+                    new Message(MessageType.STROKE_PROGRESS, stroke, "Teacher_PPT")
+                );
+            }
+        });
 
         // Wire state supplier so late-joining students get a full canvas snapshot
         if (server != null) {
@@ -204,35 +239,51 @@ public class TeacherUI {
 
         Button undoBtn = new Button("Undo");
         undoBtn.setOnAction(e -> {
-            getActivePane().undo();
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;   // code tab active — no drawing action
+            pane.undo();
             if (server != null) server.broadcast(new Message(MessageType.UNDO, null, getActiveSender()));
         });
 
         Button redoBtn = new Button("Redo");
         redoBtn.setOnAction(e -> {
-            getActivePane().redo();
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.redo();
             if (server != null) server.broadcast(new Message(MessageType.REDO, null, getActiveSender()));
         });
 
         Button clearBoard = new Button("Clear Board");
         clearBoard.setOnAction(e -> {
-            getActivePane().clearWhiteboard();
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.clearWhiteboard();
             if (server != null)
                 server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, getActiveSender()));
         });
 
         Button clearAnnotations = new Button("Clear Annotations");
         clearAnnotations.setOnAction(e -> {
-            getActivePane().clearAnnotations();
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.clearAnnotations();
             if (server != null)
                 server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, getActiveSender()));
         });
 
         Button zoomInBtn = new Button("Zoom In");
-        zoomInBtn.setOnAction(e -> getActivePane().setZoom(getActivePane().getZoom() + 0.1));
+        zoomInBtn.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.setZoom(pane.getZoom() + 0.1);
+        });
 
         Button zoomOutBtn = new Button("Zoom Out");
-        zoomOutBtn.setOnAction(e -> getActivePane().setZoom(getActivePane().getZoom() - 0.1));
+        zoomOutBtn.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.setZoom(pane.getZoom() - 0.1);
+        });
 
         // Promoted to instance field
         this.toolbar = new HBox(10,
@@ -284,7 +335,11 @@ public class TeacherUI {
 
         Button deleteShapeBtn = new Button("Delete Shape");
         deleteShapeBtn.setStyle("-fx-background-color: #e74c3c; -fx-text-fill: white;");
-        deleteShapeBtn.setOnAction(e -> getActivePane().deleteSelectedShape());
+        deleteShapeBtn.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.deleteSelectedShape();
+        });
 
         // Promoted to instance field
         this.shapeToolbar = new HBox(8,
@@ -343,11 +398,71 @@ public class TeacherUI {
         pptTab = new Tab("PPT Sharing", pptPanel);
         pptTab.setClosable(false);
 
+        // ── Tab 3: Code Sharing ────────────────────────────────────────────────
+
+        Label codeStatusLabel = new Label("Changes broadcast automatically");
+        codeStatusLabel.setStyle("-fx-text-fill: #888;");
+
+        HBox codeControls = new HBox(10, codeStatusLabel);
+        codeControls.setAlignment(Pos.CENTER_LEFT);
+        codeControls.setPadding(new Insets(8, 12, 8, 12));
+        codeControls.setStyle("-fx-background-color: #ececec; -fx-border-color: #ccc; -fx-border-width: 0 0 1 0;");
+
+        codeEditor = new TextArea();
+        codeEditor.setPromptText("Type or paste code here, then click \"Share Code\" to broadcast to students\u2026");
+        codeEditor.setFont(javafx.scene.text.Font.font("Monospaced", 14));
+        codeEditor.setWrapText(false);
+        codeEditor.setStyle("-fx-control-inner-background: #1e1e1e; -fx-text-fill: #d4d4d4;");
+        codeEditor.setTextFormatter(new TextFormatter<>(change -> {
+            if (change.getText().contains("\t")) {
+                change.setText(change.getText().replace("\t", "    "));
+            }
+            return change;
+        }));
+        codeEditor.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (e.getCode() == javafx.scene.input.KeyCode.TAB) {
+                e.consume(); // Prevent focus shift
+                codeEditor.insertText(codeEditor.getCaretPosition(), "    ");
+            }
+        });
+
+        // Debounced real-time code sharing: broadcast 300ms after the teacher stops typing.
+        PauseTransition codeShareDebounce = new PauseTransition(Duration.millis(300));
+        codeShareDebounce.setOnFinished(evt -> {
+            if (server == null) return;
+            String code = codeEditor.getText();
+            if (code == null || code.isBlank()) return;
+            server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData(code, "Plain Text"), "Teacher"));
+            codeStatusLabel.setText("Last synced: " + java.time.LocalTime.now().withNano(0));
+            codeStatusLabel.setStyle("-fx-text-fill: #27ae60;");
+        });
+        codeEditor.textProperty().addListener((obs, oldVal, newVal) -> codeShareDebounce.playFromStart());
+
+        VBox.setVgrow(codeEditor, Priority.ALWAYS);
+
+        VBox codePanel = new VBox(codeControls, codeEditor);
+        VBox.setVgrow(codePanel, Priority.ALWAYS);
+
+        codeTab = new Tab("Code Sharing", codePanel);
+        codeTab.setClosable(false);
+
         // ── TabPane ────────────────────────────────────────────────────────
-        tabPane = new TabPane(whiteboardTab, pptTab);
+        tabPane = new TabPane(whiteboardTab, pptTab, codeTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
-        // The toolbars are always visible now since drawing is enabled on both tabs
+        // Hide drawing toolbars when Code tab is active
+        tabPane.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+            boolean drawVisible = (newTab != codeTab);
+            toolbar.setVisible(drawVisible);
+            toolbar.setManaged(drawVisible);
+            shapeToolbar.setVisible(drawVisible);
+            shapeToolbar.setManaged(drawVisible);
+        });
+        // Initial state (whiteboard tab is selected by default)
+        toolbar.setVisible(true);
+        toolbar.setManaged(true);
+        shapeToolbar.setVisible(true);
+        shapeToolbar.setManaged(true);
 
         // ── Root layout ────────────────────────────────────────────────────
         VBox topSection = new VBox(topBar, toolbar, shapeToolbar);
@@ -364,6 +479,16 @@ public class TeacherUI {
                 pptService.isLoaded()
                     ? new Message(MessageType.PPT_SLIDE, pptService.getCurrentSlideData(), "Teacher")
                     : null);
+        }
+
+        // Wire code state supplier for late-join sync
+        if (server != null) {
+            server.setCodeStateSupplier(() -> {
+                if (codeEditor == null) return null;
+                String code = codeEditor.getText();
+                if (code == null || code.isBlank()) return null;
+                return new Message(MessageType.CODE_SHARE, new CodeData(code, "Plain Text"), "Teacher");
+            });
         }
 
         // ── Load PPTX button ───────────────────────────────────────────────

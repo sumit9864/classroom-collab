@@ -1,6 +1,7 @@
 package com.classroom.ui;
 
 import com.classroom.client.StudentClient;
+import com.classroom.model.CodeData;
 import com.classroom.model.Message;
 import com.classroom.model.ShapeData;
 import com.classroom.model.SlideData;
@@ -32,6 +33,10 @@ public class StudentUI {
     private TabPane tabPane;
     private StackPane pptSlidePanel;
     private WhiteboardPane pptWhiteboardPane;
+
+    // Phase 4 — Code Sharing fields
+    private Tab      codeTab;
+    private TextArea codeViewer;
 
     public StudentUI(Stage stage, StudentClient client) {
         this.stage = stage;
@@ -80,13 +85,17 @@ public class StudentUI {
 
         Button zoomInBtn = new Button("Zoom In");
         zoomInBtn.setOnAction(e -> {
-            WhiteboardPane active = tabPane.getSelectionModel().getSelectedItem() == pptTab ? pptWhiteboardPane : whiteboardPane;
+            Tab selected = tabPane.getSelectionModel().getSelectedItem();
+            if (selected == codeTab) return;                     // no zoom on code tab
+            WhiteboardPane active = (selected == pptTab) ? pptWhiteboardPane : whiteboardPane;
             active.setZoom(active.getZoom() + 0.1);
         });
 
         Button zoomOutBtn = new Button("Zoom Out");
         zoomOutBtn.setOnAction(e -> {
-            WhiteboardPane active = tabPane.getSelectionModel().getSelectedItem() == pptTab ? pptWhiteboardPane : whiteboardPane;
+            Tab selected = tabPane.getSelectionModel().getSelectedItem();
+            if (selected == codeTab) return;
+            WhiteboardPane active = (selected == pptTab) ? pptWhiteboardPane : whiteboardPane;
             active.setZoom(active.getZoom() - 0.1);
         });
 
@@ -122,8 +131,20 @@ public class StudentUI {
         pptTab = new Tab("PPT Slide", pptSlidePanel);
         pptTab.setClosable(false);
 
+        // ── Tab 3: Code ────────────────────────────────────────────────────────────
+        codeViewer = new TextArea();
+        codeViewer.setEditable(false);
+        codeViewer.setPromptText("Waiting for teacher to share code\u2026");
+        codeViewer.setFont(javafx.scene.text.Font.font("Monospaced", 14));
+        codeViewer.setWrapText(false);
+        codeViewer.setStyle("-fx-control-inner-background: #1e1e1e; " +
+                "-fx-text-fill: #d4d4d4;");  // dark editor theme for contrast
+
+        codeTab = new Tab("Code", codeViewer);
+        codeTab.setClosable(false);
+
         // ── TabPane ────────────────────────────────────────────────────────
-        tabPane = new TabPane(whiteboardTab, pptTab);
+        tabPane = new TabPane(whiteboardTab, pptTab, codeTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         // ── Root layout ────────────────────────────────────────────────────
@@ -163,6 +184,11 @@ public class StudentUI {
                 break;
 
             // Phase 2 — Whiteboard & Annotation messages
+            case STROKE_PROGRESS:
+                if (targetPane != null) {
+                    targetPane.applyStrokeProgress((StrokeData) msg.getPayload());
+                }
+                break;
             case WHITEBOARD_STROKE:
                 if (targetPane != null)
                     targetPane.applyStroke((StrokeData) msg.getPayload());
@@ -223,6 +249,13 @@ public class StudentUI {
                 }
                 // Auto-switch student to PPT tab
                 tabPane.getSelectionModel().select(pptTab);
+                break;
+
+            // Phase 4 — Code Sharing
+            case CODE_SHARE:
+                CodeData cd = (CodeData) msg.getPayload();
+                codeViewer.setText(cd.getCode());
+                tabPane.getSelectionModel().select(codeTab);
                 break;
 
             default:

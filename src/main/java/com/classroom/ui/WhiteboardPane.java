@@ -32,6 +32,11 @@ public class WhiteboardPane extends StackPane {
     private final GraphicsContext wbGc;
     private final GraphicsContext annGc;
 
+    // Student-side temporary canvas that renders the teacher's in-progress stroke.
+    // Lives on top of all other layers. Cleared atomically when the final stroke commits.
+    private final Canvas progressOverlayCanvas;
+    private final GraphicsContext progressGc;
+
     // ── Shape overlay (JavaFX nodes, on top of canvases) ─────────────────────
     private final Pane shapeOverlayPane;
 
@@ -102,6 +107,10 @@ public class WhiteboardPane extends StackPane {
     private double       shapeDragX, shapeDragY;
     private javafx.scene.Node previewNode = null;
 
+    // ID of the shape currently being drawn via mousePressed → mouseDragged → mouseReleased.
+    // Null when not drawing a shape. Used to stream SHAPE_UPDATE in real time during draw.
+    private String currentDragShapeId = null;
+
     // SELECT mode drag
     private enum SelectAction { NONE, MOVING, RESIZING }
     private SelectAction selectAction  = SelectAction.NONE;
@@ -116,6 +125,18 @@ public class WhiteboardPane extends StackPane {
     private Consumer<ShapeData> onShapeUpdated;
     private Consumer<String>    onShapeRemoved;
 
+    // Teacher-side only: fired continuously during freehand drag with current in-progress stroke.
+    // Never called on the student side (set to null in student constructor).
+    private Consumer<StrokeData> onStrokeProgress;
+
+    // Throttle STROKE_PROGRESS to ~60fps so we do not fire a network message for every pixel
+    private long lastStrokeProgressMs = 0L;
+    private static final long STROKE_PROGRESS_INTERVAL_MS = 16L; // ~60fps
+
+    // Throttle SHAPE_UPDATE-during-drag to ~60fps
+    private long lastShapeDragMs = 0L;
+    private static final long SHAPE_DRAG_INTERVAL_MS = 16L;
+
     // ── Constructor ───────────────────────────────────────────────────────────
     public WhiteboardPane(boolean teacherMode, Consumer<StrokeData> onStrokeDrawn) {
         this.teacherMode   = teacherMode;
@@ -126,6 +147,10 @@ public class WhiteboardPane extends StackPane {
         wbGc  = whiteboardCanvas.getGraphicsContext2D();
         annGc = annotationCanvas.getGraphicsContext2D();
 
+        progressOverlayCanvas = new Canvas(800, 500);
+        progressGc = progressOverlayCanvas.getGraphicsContext2D();
+        progressOverlayCanvas.setMouseTransparent(true); // never captures mouse events
+
         shapeOverlayPane = new Pane();
         shapeOverlayPane.setMinSize(800, 500);
         shapeOverlayPane.setPrefSize(800, 500);
@@ -133,7 +158,7 @@ public class WhiteboardPane extends StackPane {
         // FREEHAND mode: overlay is transparent so canvas receives events
         shapeOverlayPane.setMouseTransparent(true);
 
-        getChildren().addAll(whiteboardCanvas, annotationCanvas, shapeOverlayPane);
+        getChildren().addAll(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
         setStyle("-fx-background-color: #e0e0e0;");
         setMinSize(800, 500);
         setPrefSize(800, 500);
@@ -154,6 +179,10 @@ public class WhiteboardPane extends StackPane {
         this.onShapeAdded   = onAdded;
         this.onShapeUpdated = onUpdated;
         this.onShapeRemoved = onRemoved;
+    }
+
+    public void setStrokeProgressCallback(Consumer<StrokeData> callback) {
+        this.onStrokeProgress = callback;
     }
 
     // ── FREEHAND canvas mouse handlers ────────────────────────────────────────
@@ -204,6 +233,20 @@ public class WhiteboardPane extends StackPane {
                 gc.lineTo(px, py); gc.stroke(); gc.beginPath(); gc.moveTo(px, py);
             }
             lastX = px; lastY = py;
+            // Fire STROKE_PROGRESS callback — throttled to STROKE_PROGRESS_INTERVAL_MS
+            if (onStrokeProgress != null) {
+                long now = System.currentTimeMillis();
+                if (now - lastStrokeProgressMs >= STROKE_PROGRESS_INTERVAL_MS) {
+                    lastStrokeProgressMs = now;
+                    StrokeData progressStroke = new StrokeData(
+                        new ArrayList<>(currentPoints),
+                        drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
+                        strokeWidth,
+                        annotationMode
+                    );
+                    onStrokeProgress.accept(progressStroke);
+                }
+            }
         });
         annotationCanvas.setOnMouseReleased(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
@@ -222,18 +265,50 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setOnMousePressed(e -> {
             if (!e.isPrimaryButtonDown()) return;
             if (drawMode == DrawMode.SELECT) {
-                // Click on empty space → deselect
                 clearHandles();
                 selectedShapeId = null;
             } else if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER) {
-                shapeDragX = e.getX(); shapeDragY = e.getY();
+                shapeDragX = e.getX();
+                shapeDragY = e.getY();
                 startPreview(e.getX(), e.getY());
+
+                // For non-TEXT shapes: create a zero-size shape immediately and broadcast SHAPE_ADD.
+                // This lets students see the shape appear and stretch in real time as the teacher drags.
+                if (drawMode != DrawMode.SHAPE_TEXT) {
+                    ShapeData earlyShape = createShapeFromBounds(
+                        shapeDragX, shapeDragY, shapeDragX, shapeDragY);
+                    if (earlyShape != null) {
+                        // Add to internal maps without recording history yet.
+                        // History is recorded in finalizeShape() so undo still works as one atomic action.
+                        shapeDataMap.put(earlyShape.getId(), earlyShape);
+                        Group g = buildGroup(earlyShape);
+                        shapeNodeMap.put(earlyShape.getId(), g);
+                        shapeOverlayPane.getChildren().add(g);
+                        currentDragShapeId = earlyShape.getId();
+                        // Broadcast SHAPE_ADD so students see the shape appear
+                        if (onShapeAdded != null) onShapeAdded.accept(earlyShape);
+                    }
+                }
             }
         });
         shapeOverlayPane.setOnMouseDragged(e -> {
             if (!e.isPrimaryButtonDown()) return;
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 updatePreview(e.getX(), e.getY());
+
+                // Update the tracked shape geometry and broadcast SHAPE_UPDATE (throttled)
+                if (currentDragShapeId != null) {
+                    ShapeData sd = shapeDataMap.get(currentDragShapeId);
+                    if (sd != null) {
+                        updateShapeGeometry(sd, shapeDragX, shapeDragY, e.getX(), e.getY());
+                        syncNodeFromData(sd);
+                        long now = System.currentTimeMillis();
+                        if (now - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
+                            lastShapeDragMs = now;
+                            if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+                        }
+                    }
+                }
             }
         });
         shapeOverlayPane.setOnMouseReleased(e -> {
@@ -311,14 +386,16 @@ public class WhiteboardPane extends StackPane {
     }
 
     private void finalizeShape(double x, double y) {
+        // Remove preview outline
         if (previewNode != null) {
             shapeOverlayPane.getChildren().remove(previewNode);
             previewNode = null;
         }
-        double x0 = Math.min(shapeDragX, x), y0 = Math.min(shapeDragY, y);
-        double w  = Math.abs(x - shapeDragX),   h  = Math.abs(y - shapeDragY);
 
         if (drawMode == DrawMode.SHAPE_TEXT) {
+            // TEXT shapes are not pre-created on press — show dialog and create now
+            double x0 = Math.min(shapeDragX, x), y0 = Math.min(shapeDragY, y);
+            double w  = Math.abs(x - shapeDragX),   h  = Math.abs(y - shapeDragY);
             TextInputDialog dlg = new TextInputDialog();
             dlg.setTitle("Text Box");
             dlg.setHeaderText("Enter text for the text box:");
@@ -328,20 +405,93 @@ public class WhiteboardPane extends StackPane {
             ShapeData sd = new ShapeData(ShapeType.TEXT, x0, y0,
                     Math.max(w, 80), Math.max(h, 28),
                     toHex(currentColor), strokeWidth, res.get(), 14.0, annotationMode);
-            addShapeInternal(sd);
+            addShapeInternal(sd); // recordAction + broadcast SHAPE_ADD
+            return;
+        }
 
-        } else if (drawMode == DrawMode.SHAPE_LINE || drawMode == DrawMode.SHAPE_ARROW) {
-            ShapeType type = (drawMode == DrawMode.SHAPE_ARROW) ? ShapeType.ARROW : ShapeType.LINE;
-            ShapeData sd = new ShapeData(type,
-                    shapeDragX, shapeDragY, x - shapeDragX, y - shapeDragY,
-                    toHex(currentColor), strokeWidth, null, 0, annotationMode);
-            addShapeInternal(sd);
+        // For shapes tracked via currentDragShapeId (RECT, ELLIPSE, LINE, ARROW)
+        if (currentDragShapeId != null) {
+            ShapeData sd = shapeDataMap.get(currentDragShapeId);
+            if (sd != null) {
+                // Apply final geometry
+                updateShapeGeometry(sd, shapeDragX, shapeDragY, x, y);
 
-        } else if (w > 5) {
-            ShapeType type = (drawMode == DrawMode.SHAPE_RECT) ? ShapeType.RECT : ShapeType.ELLIPSE;
-            ShapeData sd = new ShapeData(type, x0, y0, w, h,
-                    toHex(currentColor), strokeWidth, null, 0, annotationMode);
-            addShapeInternal(sd);
+                // Min-size guard: silently remove tiny accidental shapes (click without drag)
+                boolean tooSmall = (sd.getType() == ShapeType.RECT || sd.getType() == ShapeType.ELLIPSE)
+                        && (sd.getW() < 5 || sd.getH() < 5);
+
+                if (tooSmall) {
+                    // Remove locally
+                    Group g = shapeNodeMap.remove(sd.getId());
+                    if (g != null) shapeOverlayPane.getChildren().remove(g);
+                    shapeDataMap.remove(sd.getId());
+                    // Tell students to remove the zero-size shape they received on mousePressed
+                    if (onShapeRemoved != null) onShapeRemoved.accept(sd.getId());
+                } else {
+                    syncNodeFromData(sd);
+                    // Record to history NOW (single undo action covers the entire draw gesture)
+                    recordAction(new BoardAction(BoardAction.Type.SHAPE_ADD, null, sd.copy(), null));
+                    // Broadcast final update (committed geometry)
+                    if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+                }
+            }
+            currentDragShapeId = null;
+        }
+    }
+
+    /**
+     * Creates a ShapeData from the current draw mode and bounding coordinates.
+     * Returns null for SHAPE_TEXT and any non-shape mode.
+     * The shape is given a fresh UUID. Its geometry may be zero-size on mousePressed.
+     */
+    private ShapeData createShapeFromBounds(double x1, double y1, double x2, double y2) {
+        String hex = toHex(currentColor);
+        switch (drawMode) {
+            case SHAPE_RECT:
+                return new ShapeData(ShapeType.RECT,
+                    Math.min(x1, x2), Math.min(y1, y2),
+                    Math.abs(x2 - x1), Math.abs(y2 - y1),
+                    hex, strokeWidth, null, 0, annotationMode);
+            case SHAPE_ELLIPSE:
+                return new ShapeData(ShapeType.ELLIPSE,
+                    Math.min(x1, x2), Math.min(y1, y2),
+                    Math.abs(x2 - x1), Math.abs(y2 - y1),
+                    hex, strokeWidth, null, 0, annotationMode);
+            case SHAPE_LINE:
+                return new ShapeData(ShapeType.LINE,
+                    x1, y1, x2 - x1, y2 - y1,
+                    hex, strokeWidth, null, 0, annotationMode);
+            case SHAPE_ARROW:
+                return new ShapeData(ShapeType.ARROW,
+                    x1, y1, x2 - x1, y2 - y1,
+                    hex, strokeWidth, null, 0, annotationMode);
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Updates the mutable geometry fields of a ShapeData to reflect the current drag bounds.
+     * Does not trigger any callbacks or history recording — pure data mutation.
+     */
+    private void updateShapeGeometry(ShapeData sd, double x1, double y1, double x2, double y2) {
+        switch (sd.getType()) {
+            case RECT:
+            case ELLIPSE:
+                sd.setX(Math.min(x1, x2));
+                sd.setY(Math.min(y1, y2));
+                sd.setW(Math.abs(x2 - x1));
+                sd.setH(Math.abs(y2 - y1));
+                break;
+            case LINE:
+            case ARROW:
+                sd.setX(x1);
+                sd.setY(y1);
+                sd.setW(x2 - x1);
+                sd.setH(y2 - y1);
+                break;
+            default:
+                break;
         }
     }
 
@@ -528,6 +678,12 @@ public class WhiteboardPane extends StackPane {
             sd.setX(origX + dx); sd.setY(origY + dy);
             syncNodeFromData(sd);
             updateHandles();
+            // Stream position to students while dragging (throttled)
+            long nowDrag = System.currentTimeMillis();
+            if (nowDrag - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
+                lastShapeDragMs = nowDrag;
+                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            }
         });
         g.setOnMouseReleased(e -> {
             if (drawMode != DrawMode.SELECT || selectAction != SelectAction.MOVING) return;
@@ -640,6 +796,12 @@ public class WhiteboardPane extends StackPane {
             applyResize(sd, activeHandle, dx, dy);
             syncNodeFromData(sd);
             updateHandles();
+            // Stream resize to students while dragging (throttled)
+            long nowResize = System.currentTimeMillis();
+            if (nowResize - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
+                lastShapeDragMs = nowResize;
+                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            }
         });
         h.setOnMouseReleased(e -> {
             if (selectAction != SelectAction.RESIZING) return;
@@ -722,6 +884,7 @@ public class WhiteboardPane extends StackPane {
 
     /** Replays a FullState snapshot — used only on the student side after receiving FULL_STATE. */
     public void applyFullState(FullState state) {
+        clearStrokeProgress();
         // Resize canvas first
         setCanvasSize(state.canvasW, state.canvasH);
         // Clear everything
@@ -772,8 +935,52 @@ public class WhiteboardPane extends StackPane {
     }
 
     public void applyStroke(StrokeData stroke) {
+        clearStrokeProgress(); // swap out the in-progress overlay before committing to canvas
         recordStroke(stroke);
         drawStrokeOnly(stroke);
+    }
+
+    private void drawOnGc(GraphicsContext gc, StrokeData stroke) {
+        List<double[]> pts = stroke.getPoints();
+        if (pts.isEmpty()) return;
+        double cw = getCanvasW(), ch = getCanvasH();
+        if (cw == 0 || ch == 0) return;
+        boolean isEraser = "#00000000".equals(stroke.getColorHex());
+        if (isEraser) {
+            double sw = stroke.getStrokeWidth();
+            for (double[] pt : pts) {
+                gc.clearRect(pt[0] * cw - sw, pt[1] * ch - sw, sw * 2, sw * 2);
+            }
+            return;
+        }
+        gc.setStroke(Color.web(stroke.getColorHex()));
+        gc.setLineWidth(stroke.getStrokeWidth());
+        gc.setLineCap(StrokeLineCap.ROUND);
+        gc.setLineJoin(StrokeLineJoin.ROUND);
+        gc.beginPath();
+        gc.moveTo(pts.get(0)[0] * cw, pts.get(0)[1] * ch);
+        for (int i = 1; i < pts.size(); i++) {
+            gc.lineTo(pts.get(i)[0] * cw, pts.get(i)[1] * ch);
+        }
+        gc.stroke();
+    }
+
+    /**
+     * Renders an in-progress stroke from the teacher onto the temporary overlay canvas.
+     * Does NOT add anything to history. The overlay is cleared when the final stroke arrives.
+     * Called only on the student side.
+     */
+    public void applyStrokeProgress(StrokeData stroke) {
+        progressGc.clearRect(0, 0, progressOverlayCanvas.getWidth(), progressOverlayCanvas.getHeight());
+        drawOnGc(progressGc, stroke);
+    }
+
+    /**
+     * Clears the in-progress stroke overlay. Called before committing the final stroke,
+     * and also on CLEAR / FULL_STATE to prevent ghost strokes.
+     */
+    public void clearStrokeProgress() {
+        progressGc.clearRect(0, 0, progressOverlayCanvas.getWidth(), progressOverlayCanvas.getHeight());
     }
 
     private void drawStrokeOnly(StrokeData stroke) {
@@ -819,6 +1026,7 @@ public class WhiteboardPane extends StackPane {
     }
 
     public void clearWhiteboard() {
+        clearStrokeProgress();
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         } else {
@@ -834,6 +1042,7 @@ public class WhiteboardPane extends StackPane {
     }
 
     public void clearAnnotations() {
+        clearStrokeProgress();
         annGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         annGc.beginPath();
         history.removeIf(BoardAction::isAnnotation);
@@ -917,6 +1126,8 @@ public class WhiteboardPane extends StackPane {
     public void setCanvasSize(double w, double h) {
         whiteboardCanvas.setWidth(w); whiteboardCanvas.setHeight(h);
         annotationCanvas.setWidth(w); annotationCanvas.setHeight(h);
+        progressOverlayCanvas.setWidth(w);
+        progressOverlayCanvas.setHeight(h);
         shapeOverlayPane.setMinSize(w, h);
         shapeOverlayPane.setPrefSize(w, h);
         shapeOverlayPane.setMaxSize(w, h);

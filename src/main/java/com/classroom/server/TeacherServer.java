@@ -11,6 +11,10 @@ import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 public class TeacherServer {
@@ -23,6 +27,12 @@ public class TeacherServer {
     private Supplier<Message> stateSupplier;       // provides FULL_STATE snapshot for whiteboard
     private Supplier<Message> pptStateSupplier;    // provides current PPT slide
     private Supplier<Message> pptWhiteboardStateSupplier; // provides FULL_STATE for PPT whiteboard
+    private Supplier<Message> codeStateSupplier;  // provides last shared CodeData for late-join
+
+    // Async broadcast infrastructure
+    private final LinkedBlockingQueue<Message> dispatchQueue = new LinkedBlockingQueue<>();
+    private final ConcurrentHashMap<String, AtomicReference<Message>> latestProgressMap = new ConcurrentHashMap<>();
+    private Thread dispatchThread;
 
     public TeacherServer(int port, Runnable onClientListChanged) {
         this.port = port;
@@ -42,6 +52,11 @@ public class TeacherServer {
 
     public void setPptWhiteboardStateSupplier(Supplier<Message> pptWhiteboardStateSupplier) {
         this.pptWhiteboardStateSupplier = pptWhiteboardStateSupplier;
+    }
+
+    /** Set after construction, once codeEditor TextArea exists in TeacherUI. */
+    public void setCodeStateSupplier(Supplier<Message> codeStateSupplier) {
+        this.codeStateSupplier = codeStateSupplier;
     }
 
     /**
@@ -73,12 +88,35 @@ public class TeacherServer {
         });
         acceptThread.setDaemon(true);
         acceptThread.start();
+
+        dispatchThread = new Thread(() -> {
+            while (running || !dispatchQueue.isEmpty()) {
+                // Priority 1: drain all pending latest-value progress messages first.
+                // This ensures in-progress strokes and shape drags are never stale.
+                for (AtomicReference<Message> ref : latestProgressMap.values()) {
+                    Message m = ref.getAndSet(null);
+                    if (m != null) doSendAll(m);
+                }
+                // Priority 2: send one regular queued message, waiting up to 5ms if queue is empty.
+                try {
+                    Message msg = dispatchQueue.poll(5, TimeUnit.MILLISECONDS);
+                    if (msg != null) doSendAll(msg);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        });
+        dispatchThread.setDaemon(true);
+        dispatchThread.setName("broadcast-dispatch");
+        dispatchThread.start();
     }
 
     /**
      * Gracefully shuts down the server: broadcasts DISCONNECT, then closes the socket.
      */
     public void stop() {
+        if (dispatchThread != null) dispatchThread.interrupt();
         running = false;
         broadcast(new Message(MessageType.DISCONNECT, null, "Teacher"));
         try {
@@ -91,23 +129,48 @@ public class TeacherServer {
     }
 
     /**
-     * Broadcasts a message to all connected clients.
-     * Removes any client whose send fails (broken pipe).
+     * Sends a message to all connected clients synchronously.
+     * Called only from the dispatch thread — never from the FX thread.
      */
-    public void broadcast(Message msg) {
+    private void doSendAll(Message msg) {
         List<ClientHandler> failed = new ArrayList<>();
         synchronized (clients) {
             for (ClientHandler client : clients) {
                 try {
                     NetworkUtil.sendMessage(client.getOutputStream(), msg);
                 } catch (Exception e) {
-                    System.err.println("[TeacherServer] Broadcast failed for "
+                    System.err.println("[TeacherServer] Send failed for "
                             + client.getStudentName() + ": " + e.getMessage());
                     failed.add(client);
                 }
             }
         }
-        clients.removeAll(failed);
+        if (!failed.isEmpty()) {
+            clients.removeAll(failed);
+            Platform.runLater(onClientListChanged);
+        }
+    }
+
+    /**
+     * Enqueues a message for async broadcast to all students.
+     * Non-blocking — safe to call from the JavaFX Application Thread.
+     */
+    public void broadcast(Message msg) {
+        dispatchQueue.offer(msg);
+    }
+
+    /**
+     * Enqueues a message using a latest-value pattern.
+     * If a pending message with the same key already exists, it is atomically replaced.
+     * Non-blocking — safe to call from the JavaFX Application Thread.
+     *
+     * @param key A string key identifying the slot (e.g. "STROKE_PROGRESS_Teacher").
+     * @param msg The message to send.
+     */
+    public void broadcastLatest(String key, Message msg) {
+        latestProgressMap
+            .computeIfAbsent(key, k -> new AtomicReference<>())
+            .set(msg);
     }
 
     /**
@@ -145,7 +208,18 @@ public class TeacherServer {
             }
         }
 
-        // 4. Add to broadcast list and notify UI (existing)
+        // 4. Send last shared code snippet to this student only
+        if (codeStateSupplier != null) {
+            try {
+                Message codeMsg = codeStateSupplier.get();
+                if (codeMsg != null) handler.send(codeMsg);
+            } catch (Exception e) {
+                System.err.println("[TeacherServer] Failed to send code state to "
+                        + handler.getStudentName() + ": " + e.getMessage());
+            }
+        }
+
+        // 5. Add to broadcast list and notify UI (existing)
         clients.add(handler);
         broadcastStudentList();
         Platform.runLater(onClientListChanged);
