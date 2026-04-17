@@ -23,13 +23,13 @@ A Java desktop app where a teacher (host) shares educational content with studen
 2. **Whiteboard** — Shared JavaFX Canvas; teacher strokes broadcast to all students
 3. **PPT Sharing** — Teacher loads .pptx; POI renders slides as images, synced to clients
 4. **Annotation** — Teacher draws/highlights overlaid on any active content
-5. **Code Sharing** — Teacher shares code snippets; students see a read-only live view
+5. **Code Sharing** — Teacher types/pastes code with real-time auto-sync (debounced CODE_SHARE message); students receive in read-only dark-theme TextArea with strict 4-space tabs; late-join sync via codeStateSupplier
 
 ## Phase Summary
 - **Phase 1** — Maven setup, TCP server/client, authentication, session UI
 - **Phase 2** — Whiteboard canvas + annotation layer
 - **Phase 3** — PPT loading, slide rendering, navigation sync
-- **Phase 4** — Code editor panel, broadcast, student read-only view
+- **Phase 4** — Real-time Code Sharing panel with auto-sync, non-blocking async Server broadcast queue, live STROKE_PROGRESS and shape previews
 - **Phase 5** — Integration, error handling, UI polish, final JAR build
 
 ## Networking Model

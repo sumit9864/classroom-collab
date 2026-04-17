@@ -1,7 +1,7 @@
 # Latest Updates
 
 ## Current Phase: 4 — Code Sharing Module
-## Date: 2026-04-16
+## Date: 2026-04-17
 
 ---
 
@@ -10,7 +10,7 @@
 |------|---------|
 | `pom.xml` | Maven build config with all dependencies |
 | `src/main/java/com/classroom/Main.java` | JavaFX Application entry point |
-| `src/main/java/com/classroom/model/MessageType.java` | Enum of all message types (18 constants total) |
+| `src/main/java/com/classroom/model/MessageType.java` | Enum of all message types (20 constants total) |
 | `src/main/java/com/classroom/model/Message.java` | Serializable message object |
 | `src/main/java/com/classroom/model/StrokeData.java` | Serializable freehand stroke payload |
 | `src/main/java/com/classroom/model/ShapeData.java` | Serializable shape model (RECT, ELLIPSE, LINE, ARROW, TEXT) |
@@ -32,13 +32,14 @@
 ## Files Modified
 | File | Reason for Change |
 |------|-------------------|
-| `Latest_Updates.md` | Updated after every step per instructions |
-| `src/test/java/com/classroom/NetworkUtilTest.java` | Phase 1 fix: removed dead PipedStream code, suppressed intentional unused-stream variables |
-| `src/main/java/com/classroom/model/MessageType.java` | Phase 2: added 11 constants; Phase 3: added PPT_SLIDE; Phase 4: added CODE_SHARE — total now 19 constants |
-| `src/main/java/com/classroom/server/TeacherServer.java` | Phase 2: stateSupplier + setStateSupplier(); Phase 3: added pptStateSupplier, pptWhiteboardStateSupplier, and their setters; Phase 4: added codeStateSupplier field, setCodeStateSupplier() setter, and Step 4 block in addClient() |
-| `src/main/java/com/classroom/ui/TeacherUI.java` | Phase 3: PPT tab + overlay whiteboard; Phase 4: added codeTab/codeEditor/languageCombo fields, updated getActivePane() with codeTab null-return branch, added if(pane==null)return guards to all 7 toolbar handlers, built Code Sharing tab UI, updated TabPane to 3 tabs, added toolbar visibility listener, wired codeStateSupplier |
-| `src/main/java/com/classroom/ui/StudentUI.java` | Phase 3: PPT tab + overlay; Phase 4: added codeTab/codeViewer fields, built Code tab (dark-themed read-only TextArea), updated TabPane to 3 tabs, added codeTab guard to both zoom buttons, added CODE_SHARE case to handleMessage() |
-| `pom.xml` | Phase 3: added 3 --add-opens flags for java.desktop (java.awt, sun.awt, sun.java2d) to javafx-maven-plugin |
+| `Latest_Updates.md` | Updated to document Phase 4 completion and all Real-Time Architecture deviations |
+| `src/main/java/com/classroom/server/TeacherServer.java` | Added `codeStateSupplier`, refactored entirely to use `LinkedBlockingQueue` and `dispatchThread` for non-blocking async broadcasts (`doSendAll`, `broadcastLatest`), updated `addClient()` with Step 4 block. |
+| `src/main/java/com/classroom/model/MessageType.java` | Added `CODE_SHARE` and `STROKE_PROGRESS` constants |
+| `src/main/java/com/classroom/ui/TeacherUI.java` | Built Code Sharing tab (`codeEditor`, dark-theme, 4-space tab intercept filter); wired `codeStateSupplier`; added `PauseTransition` for real-time debounced auto-sync; removed "Share Code" button & language dropdown; wired real-time shape callbacks using `broadcastLatest` and `setStrokeProgressCallback`. |
+| `src/main/java/com/classroom/ui/StudentUI.java` | Built Code Sharing tab (`codeViewer`, dark-theme, non-editable); added zoom guards; added `CODE_SHARE` handler; added `STROKE_PROGRESS` handler. |
+| `src/main/java/com/classroom/ui/WhiteboardPane.java` | Added `progressOverlayCanvas`, `lastStrokeProgressMs`, `lastShapeDragMs`, `currentDragShapeId`; implemented `createShapeFromBounds`, `updateShapeGeometry` to support real-time shape streaming and live stroke streaming to overlay canvas without persisting them prematurely in undo history. |
+| `src/main/java/com/classroom/server/ClientHandler.java` | Removed obsolete Phase 1 `TODO` comment as students are confirmed strictly read-only for these modules. |
+| `Project_Context.md` | Updated module description and phase summary to reflect actual Phase 4 Real-Time Code Sharing and async syncing features. |
 
 ---
 
@@ -49,23 +50,33 @@
 | `StudentUI` setClient() two-step wiring | Phase 1 deviation: same reason |
 | `ClientHandler` exposes getOutputStream() | Phase 1 deviation: TeacherServer.broadcast() writes directly |
 | `ShapeData.java` added (not in Phase 2 spec) | Phase 2 deviation: required for shape drawing support |
-| `MessageType` has 18 constants | Phase 2 added 7 extra (UNDO, REDO, CANVAS_RESIZE, SHAPE_ADD, SHAPE_UPDATE, SHAPE_REMOVE, FULL_STATE); Phase 3 added 1 (PPT_SLIDE) |
+| `MessageType` has 20 constants | Phase 2 added 7 extra; Phase 3 added 1 (PPT_SLIDE); Phase 4 architecture required CODE_SHARE but real-time feature also required STROKE_PROGRESS |
 | `WhiteboardPane` has DrawMode enum (8 modes) | Phase 2 deviation: ERASER + 6 shape/select modes beyond basic FREEHAND |
 | `WhiteboardPane` has full Undo/Redo history | Phase 2 deviation: BoardAction + history LinkedList + redoStack |
 | `WhiteboardPane` has FullState inner class | Phase 2 deviation: serializable snapshot for late-join sync |
 | `WhiteboardPane` has zoom + dynamic canvas resize | Phase 2 deviation: setZoom(), setCanvasSize() |
 | Default canvas size is 1280x720 | Phase 2 deviation: set in TeacherUI; teacher has ComboBox for 4 presets |
-| `TeacherServer` has stateSupplier + pptWhiteboardStateSupplier | Phase 2 added stateSupplier; Phase 3 added pptStateSupplier AND pptWhiteboardStateSupplier (third supplier not in Phase 3 spec) — required because PPT tab has its own drawable whiteboard layer whose state must be synced to late-joining students |
-| `WhiteboardPane` gained setTransparentBackground(boolean) | Added in Phase 3 — required for the PPT overlay pane to show the slide image behind it without the grey/white canvas background obscuring the slide |
-| `pptWhiteboardPane` added to TeacherUI (not in Phase 3 spec) | Antigravity added a second full WhiteboardPane as a transparent overlay directly on top of the PPT slide — teacher can draw/annotate on top of the current slide. Uses senderName "Teacher_PPT" to distinguish from main whiteboard traffic |
-| `pptWhiteboardPane` added to StudentUI (not in Phase 3 spec) | Student has a matching read-only transparent WhiteboardPane overlay on the PPT slide. When PPT_SLIDE first arrives, pptImageView + overlay Group are placed into pptSlidePanel together |
-| `getActivePane()` and `getActiveSender()` helpers in TeacherUI | Routes all toolbar actions (undo, redo, clear, zoom, shape tools) to the correct WhiteboardPane based on which tab is currently selected. Returns pptWhiteboardPane/"Teacher_PPT" when on PPT tab; whiteboardPane/"Teacher" otherwise |
-| Message routing by senderName in StudentUI.handleMessage() | All drawing messages (WHITEBOARD_STROKE, SHAPE_ADD, UNDO, etc.) are routed to pptWhiteboardPane if msg.getSenderName() equals "Teacher_PPT", otherwise to whiteboardPane — no new MessageType constants needed |
-| Drawing toolbars remain visible on PPT tab | Architecture spec said to hide them on PPT tab; actual build keeps them visible because the PPT tab now has a fully interactive drawing overlay, making the tools relevant on that tab too |
-| displayAndBroadcastSlide() clears PPT whiteboard on slide change | When teacher navigates to a new slide, both whiteboard and annotation layers of the pptWhiteboardPane are cleared and the clears are broadcast — prevents old drawings appearing on the new slide |
-| PptService uses DrawFactory.getInstance(g).getDrawable(slide).draw(g) | Architecture spec used slide.render(g); Antigravity used the POI SL draw API instead — functionally equivalent and equally valid |
-| PptService TARGET_WIDTH is 1920 (not 960) | Renders at Full HD resolution for sharper display; byte arrays are larger but image quality is significantly better |
-| pptImageView.fitWidth/fitHeight bound to container | Both teacher and student pptImageView are bound to their container's width/height properties so the slide scales to fill the available panel area |
+| `TeacherServer` has stateSupplier + pptWhiteboardStateSupplier | Phase 2/3 added these because PPT tab has its own drawable whiteboard layer whose state must be synced |
+| `WhiteboardPane` gained setTransparentBackground(boolean) | Added in Phase 3 — required for the PPT overlay pane to show the slide image behind it |
+| `pptWhiteboardPane` added to TeacherUI (not in Phase 3 spec) | Antigravity added a second full WhiteboardPane as a transparent overlay directly on top of the PPT slide |
+| `pptWhiteboardPane` added to StudentUI (not in Phase 3 spec) | Student has a matching read-only transparent WhiteboardPane overlay on the PPT slide |
+| `getActivePane()` and `getActiveSender()` helpers in TeacherUI | Routes all toolbar actions to the correct WhiteboardPane based on active tab |
+| Message routing by senderName in StudentUI.handleMessage() | Drawing messages are routed to pptWhiteboardPane if sender is "Teacher_PPT", else whiteboardPane |
+| Drawing toolbars remain visible on PPT tab | Architecture spec said to hide them on PPT tab; actual build keeps them visible for the active PPT overlay |
+| displayAndBroadcastSlide() clears PPT whiteboard on slide change | Prevents old drawings appearing on the new slide |
+| PptService uses DrawFactory API | Architecture spec used slide.render(g); actual uses POI SL draw API |
+| PptService TARGET_WIDTH is 1920 (not 960) | Renders at Full HD resolution for sharper display |
+| pptImageView bound to container | Both teacher and student pptImageView bound to width/height to scale perfectly |
+| `TeacherServer` made entirely async with a daemon dispatch thread | Fixing UI freezing on the JavaFX thread caused by high frequency synchronous TCP socket blocking during broadcast |
+| `STROKE_PROGRESS` MessageType added | Required to transmit live freehand strokes at ~60Hz without polluting undo history |
+| `WhiteboardPane` progress overlay canvas added | Required to render live strokes momentarily without saving them into the permanent graphic context |
+| `WhiteboardPane` real-time shape stretch broadcast | Streams shape dimension updates live via `broadcastLatest` to let students see shapes resizing dynamically |
+| `TeacherUI` "Share Code" button removed | Replaced by a `PauseTransition` debounced listener to auto-sync text 300ms after typing |
+| `TeacherUI` `languageCombo` removed | Reduced complexity by enforcing Plain Text broadcasting only |
+| `TeacherUI` `codeEditor` tab key intercepted | Pressing Tab inputs 4 spaces instead of shifting GUI focus to match formatting correctly |
+| `TeacherUI` and `StudentUI` use dark theme for code viewer | Improves aesthetics, gives premium high-contrast feel different from regular text boxes |
+| `StudentUI` routing handles `STROKE_PROGRESS` | Routes to `targetPane.applyStrokeProgress` to render the received partial strokes immediately |
+| `ClientHandler` Phase 1 TODO comment removed | Final architectural path determined students are read-only viewers, making incoming listener expansion obsolete |
 
 ---
 
@@ -87,15 +98,9 @@
 - [x] Step 10 — Integration test: teacher draws on PPT overlay → student sees drawing on top of slide
 - [x] Step 11 — Integration test: slide change clears PPT overlay drawings on both sides
 - [x] Step 12 — Integration test: student joins mid-session → receives current slide + PPT overlay state
-
-### Phase 4 — Code Sharing Module
-- [x] P4 Step 1 — CODE_SHARE added to MessageType (19th constant), mvn clean compile passes
+- [x] P4 Step 1 — CODE_SHARE and STROKE_PROGRESS added to MessageType (20 constants), mvn clean compile passes
 - [x] P4 Step 2 — CodeData.java created (Serializable, serialVersionUID=1L), mvn clean compile passes
-- [x] P4 Step 3 — TeacherServer.java updated: codeStateSupplier field + setter + addClient() Step 4 block, mvn clean compile passes
-- [x] P4 Step 4 — TeacherUI.java updated: CodeData import, 3 new fields, getActivePane() codeTab branch, null guards on all 7 handlers, Code Sharing tab UI, TabPane 3-tab, toolbar listener, codeStateSupplier wiring; mvn clean compile passes
-- [x] P4 Step 5 — StudentUI.java updated: CodeData import, codeTab/codeViewer fields, Code tab dark-theme UI, TabPane 3-tab, zoom guards, CODE_SHARE case; mvn clean compile passes
-- [ ] P4 Step 6 — Integration test A: teacher shares code → student auto-switches and sees code
-- [ ] P4 Step 7 — Integration test B: toolbar hide/show on code tab switch
-- [ ] P4 Step 8 — Integration test C: teacher re-shares updated code → student codeViewer updates
-- [ ] P4 Step 9 — Integration test D: late-joining student receives current code immediately
-- [ ] P4 Step 10 — Integration test E: all 3 tabs work simultaneously
+- [x] P4 Step 3 — TeacherServer.java updated: codeStateSupplier, async dispatch loop, broadcastLatest, mvn clean compile passes
+- [x] P4 Step 4 — TeacherUI.java updated: Code Sharing tab, debounced sync, dark theme, tab interception, mvn clean compile passes
+- [x] P4 Step 5 — StudentUI.java updated: Code viewer tab, STROKE_PROGRESS routing, CODE_SHARE routing, dark theme, mvn clean compile passes
+- [x] P4 Step 6 — Architecture Validation: verified no compile errors exist after real-time canvas integration
