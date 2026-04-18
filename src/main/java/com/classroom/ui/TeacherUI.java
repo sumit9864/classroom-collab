@@ -543,6 +543,8 @@ public class TeacherUI {
             if (server != null) server.stop();
         });
 
+        stage.setMinWidth(900);
+        stage.setMinHeight(540);
         stage.setScene(new Scene(root, 1100, 620));
         stage.setTitle("Classroom Collaboration — Teacher");
         stage.show();

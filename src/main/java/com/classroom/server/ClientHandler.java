@@ -97,7 +97,7 @@ public class ClientHandler implements Runnable {
             default:
                 System.out.println("[ClientHandler] Unhandled message type: " + msg.getType()
                         + " from " + studentName);
-                // TODO: Phase 2+ will handle WHITEBOARD, PPT, CODE messages here
+                // Students are read-only. We do not expect incoming sync messages from them.
                 break;
         }
     }

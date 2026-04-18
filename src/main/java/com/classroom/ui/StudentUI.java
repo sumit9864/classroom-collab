@@ -157,6 +157,24 @@ public class StudentUI {
             if (client != null) client.disconnect();
         });
 
+        stage.setMinWidth(800);
+        stage.setMinHeight(540);
+
+        // Wire unexpected-disconnect handler
+        if (client != null) {
+            client.setOnDisconnect(() -> {
+                if (stage.isShowing()) {
+                    Alert alert = new Alert(Alert.AlertType.WARNING);
+                    alert.setTitle("Connection Lost");
+                    alert.setHeaderText("Disconnected from teacher");
+                    alert.setContentText(
+                        "The session has ended or the network connection was lost.");
+                    alert.showAndWait();
+                    stage.close();
+                }
+            });
+        }
+
         stage.setScene(new Scene(root, 1000, 620));
         stage.setTitle("Classroom Collaboration — Student");
         stage.show();
@@ -173,6 +191,9 @@ public class StudentUI {
         switch (msg.getType()) {
             case STUDENT_LIST_UPDATE:
                 System.out.println("[StudentUI] Student list updated: " + msg.getPayload());
+                break;
+            case HEARTBEAT:
+                // No-op — connection keep-alive from teacher. Prevents "Unhandled message" log spam.
                 break;
             case DISCONNECT:
                 Alert alert = new Alert(Alert.AlertType.INFORMATION);

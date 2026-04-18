@@ -33,6 +33,7 @@ public class TeacherServer {
     private final LinkedBlockingQueue<Message> dispatchQueue = new LinkedBlockingQueue<>();
     private final ConcurrentHashMap<String, AtomicReference<Message>> latestProgressMap = new ConcurrentHashMap<>();
     private Thread dispatchThread;
+    private Thread heartbeatThread;
 
     public TeacherServer(int port, Runnable onClientListChanged) {
         this.port = port;
@@ -110,13 +111,31 @@ public class TeacherServer {
         dispatchThread.setDaemon(true);
         dispatchThread.setName("broadcast-dispatch");
         dispatchThread.start();
+
+        heartbeatThread = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(30_000); // 30 seconds
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                if (running) {
+                    broadcast(new Message(MessageType.HEARTBEAT, null, "Teacher"));
+                }
+            }
+        });
+        heartbeatThread.setDaemon(true);
+        heartbeatThread.setName("heartbeat");
+        heartbeatThread.start();
     }
 
     /**
      * Gracefully shuts down the server: broadcasts DISCONNECT, then closes the socket.
      */
     public void stop() {
-        if (dispatchThread != null) dispatchThread.interrupt();
+        if (dispatchThread  != null) dispatchThread.interrupt();
+        if (heartbeatThread != null) heartbeatThread.interrupt();
         running = false;
         broadcast(new Message(MessageType.DISCONNECT, null, "Teacher"));
         try {

@@ -92,7 +92,7 @@ public class WhiteboardPane extends StackPane {
 
     // ── Freehand Stroke State ──────────────────────────────────────────────────
     private final List<double[]>         currentPoints = new ArrayList<>();
-    @SuppressWarnings("unused") private double lastX, lastY;
+    private double lastX, lastY;
 
     // ── Shape data & nodes ────────────────────────────────────────────────────
     // Insertion-ordered so z-order is preserved

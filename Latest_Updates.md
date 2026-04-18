@@ -1,7 +1,7 @@
 # Latest Updates
 
-## Current Phase: 4 — Code Sharing Module
-## Date: 2026-04-17
+## Current Phase: 5 — Integration, Polish & Final Build
+## Date: 2026-04-18
 
 ---
 
@@ -23,8 +23,8 @@
 | `src/main/java/com/classroom/client/StudentClient.java` | TCP socket connection to teacher |
 | `src/main/java/com/classroom/ui/LoginScreen.java` | Host/join screen for teacher and student |
 | `src/main/java/com/classroom/ui/WhiteboardPane.java` | Three-layer canvas widget with drawing, shapes, undo/redo, zoom, transparent mode |
-| `src/main/java/com/classroom/ui/TeacherUI.java` | Teacher's main window — Whiteboard tab + PPT Sharing tab with transparent overlay whiteboard |
-| `src/main/java/com/classroom/ui/StudentUI.java` | Student's main window — Whiteboard tab + PPT Slide tab with transparent overlay whiteboard |
+| `src/main/java/com/classroom/ui/TeacherUI.java` | Teacher's main window — Whiteboard tab + PPT Sharing tab + Code Sharing tab |
+| `src/main/java/com/classroom/ui/StudentUI.java` | Student's main window — Whiteboard tab + PPT Slide tab + Code tab |
 | `src/test/java/com/classroom/NetworkUtilTest.java` | JUnit 5 round-trip and null-on-EOF tests |
 
 ---
@@ -32,14 +32,12 @@
 ## Files Modified
 | File | Reason for Change |
 |------|-------------------|
-| `Latest_Updates.md` | Updated to document Phase 4 completion and all Real-Time Architecture deviations |
-| `src/main/java/com/classroom/server/TeacherServer.java` | Added `codeStateSupplier`, refactored entirely to use `LinkedBlockingQueue` and `dispatchThread` for non-blocking async broadcasts (`doSendAll`, `broadcastLatest`), updated `addClient()` with Step 4 block. |
-| `src/main/java/com/classroom/model/MessageType.java` | Added `CODE_SHARE` and `STROKE_PROGRESS` constants |
-| `src/main/java/com/classroom/ui/TeacherUI.java` | Built Code Sharing tab (`codeEditor`, dark-theme, 4-space tab intercept filter); wired `codeStateSupplier`; added `PauseTransition` for real-time debounced auto-sync; removed "Share Code" button & language dropdown; wired real-time shape callbacks using `broadcastLatest` and `setStrokeProgressCallback`. |
-| `src/main/java/com/classroom/ui/StudentUI.java` | Built Code Sharing tab (`codeViewer`, dark-theme, non-editable); added zoom guards; added `CODE_SHARE` handler; added `STROKE_PROGRESS` handler. |
-| `src/main/java/com/classroom/ui/WhiteboardPane.java` | Added `progressOverlayCanvas`, `lastStrokeProgressMs`, `lastShapeDragMs`, `currentDragShapeId`; implemented `createShapeFromBounds`, `updateShapeGeometry` to support real-time shape streaming and live stroke streaming to overlay canvas without persisting them prematurely in undo history. |
-| `src/main/java/com/classroom/server/ClientHandler.java` | Removed obsolete Phase 1 `TODO` comment as students are confirmed strictly read-only for these modules. |
-| `Project_Context.md` | Updated module description and phase summary to reflect actual Phase 4 Real-Time Code Sharing and async syncing features. |
+| `pom.xml` | Phase 5: replaced maven-shade-plugin block to add `ServicesResourceTransformer` (POI ServiceLoader merge) and signature-file filters (strip `.SF`/`.DSA`/`.RSA` to prevent `SecurityException` at startup) |
+| `src/main/java/com/classroom/server/TeacherServer.java` | Phase 5: added `heartbeatThread` field; added 30-second HEARTBEAT daemon thread at end of `start()`; updated `stop()` to interrupt `heartbeatThread` before `dispatchThread`, both before `running = false` |
+| `src/main/java/com/classroom/client/StudentClient.java` | Phase 5: added `onDisconnectCallback` field; added `setOnDisconnect(Runnable)` setter; rewrote `startListenerThread()` to capture `wasRunning` before calling `disconnect()` so callback fires only on unexpected server drop |
+| `src/main/java/com/classroom/ui/StudentUI.java` | Phase 5: added `HEARTBEAT` no-op case to `handleMessage()`; added `stage.setMinWidth(800)` / `stage.setMinHeight(540)` before `stage.setScene()`; wired disconnect callback showing `Alert.WARNING` with `stage.isShowing()` guard |
+| `src/main/java/com/classroom/ui/TeacherUI.java` | Phase 5: added `stage.setMinWidth(900)` / `stage.setMinHeight(540)` before `stage.setScene()` |
+| `Latest_Updates.md` | Updated to document Phase 5 completion |
 
 ---
 
@@ -73,15 +71,25 @@
 | `WhiteboardPane` real-time shape stretch broadcast | Streams shape dimension updates live via `broadcastLatest` to let students see shapes resizing dynamically |
 | `TeacherUI` "Share Code" button removed | Replaced by a `PauseTransition` debounced listener to auto-sync text 300ms after typing |
 | `TeacherUI` `languageCombo` removed | Reduced complexity by enforcing Plain Text broadcasting only |
-| `TeacherUI` `codeEditor` tab key intercepted | Pressing Tab inputs 4 spaces instead of shifting GUI focus to match formatting correctly |
-| `TeacherUI` and `StudentUI` use dark theme for code viewer | Improves aesthetics, gives premium high-contrast feel different from regular text boxes |
-| `StudentUI` routing handles `STROKE_PROGRESS` | Routes to `targetPane.applyStrokeProgress` to render the received partial strokes immediately |
-| `ClientHandler` Phase 1 TODO comment removed | Final architectural path determined students are read-only viewers, making incoming listener expansion obsolete |
+| `TeacherUI` `codeEditor` tab key intercepted | Pressing Tab inputs 4 spaces instead of shifting GUI focus |
+| `TeacherUI` and `StudentUI` use dark theme for code viewer | Improves aesthetics; premium high-contrast feel |
+| `StudentUI` routing handles `STROKE_PROGRESS` | Routes to `targetPane.applyStrokeProgress` to render received partial strokes immediately |
+| `ClientHandler` Phase 1 TODO comment removed | Architectural path confirmed; students are read-only viewers |
 
 ---
 
 ## Known Issues
 - _(none)_
+
+---
+
+## Run Commands
+| Command | Purpose |
+|---------|---------|
+| `mvn javafx:run` | **Primary classroom run command** — recommended for lab machines with JDK 17 + Maven |
+| `mvn clean package` | Produces `target/classroom-collab-1.0-SNAPSHOT.jar` (fat JAR — requires JavaFX on module path to run standalone) |
+
+> **Note:** The fat JAR produced by `mvn clean package` bundles all Java dependencies but NOT JavaFX native libraries (`.dll`/`.so`). Use `mvn javafx:run` for classroom use.
 
 ---
 
@@ -104,3 +112,18 @@
 - [x] P4 Step 4 — TeacherUI.java updated: Code Sharing tab, debounced sync, dark theme, tab interception, mvn clean compile passes
 - [x] P4 Step 5 — StudentUI.java updated: Code viewer tab, STROKE_PROGRESS routing, CODE_SHARE routing, dark theme, mvn clean compile passes
 - [x] P4 Step 6 — Architecture Validation: verified no compile errors exist after real-time canvas integration
+
+### Phase 5 — Integration, Polish & Final Build
+- [x] P5 Step 1 — pom.xml: shade plugin updated with ServicesResourceTransformer + signature filters; mvn clean compile passes
+- [x] P5 Step 2 — TeacherServer.java: heartbeatThread field added; 30s HEARTBEAT daemon thread started at end of start(); stop() interrupts heartbeatThread before running=false; mvn clean compile passes
+- [x] P5 Step 3 — StudentClient.java: onDisconnectCallback field + setOnDisconnect() setter added; startListenerThread() rewrote to capture wasRunning before disconnect(); mvn clean compile passes
+- [x] P5 Step 4 — StudentUI.java: HEARTBEAT no-op case added; min window 800×540; disconnect alert wired with stage.isShowing() guard; mvn clean compile passes
+- [x] P5 Step 5 — TeacherUI.java: min window 900×540 added before stage.setScene(); mvn clean compile passes
+- [x] P5 Step 12 — mvn clean package: BUILD SUCCESS, target/classroom-collab-1.0-SNAPSHOT.jar produced with zero errors
+- [ ] P5 Step 6 — Integration test: HEARTBEAT — wait 31s, confirm no "Unhandled message: HEARTBEAT" on student console
+- [ ] P5 Step 7 — Integration test: unexpected disconnect — kill teacher process, student sees "Connection Lost" alert
+- [ ] P5 Step 8 — Integration test: graceful disconnect — teacher clicks Stop Session, student sees "Session ended by teacher." (not the new alert)
+- [ ] P5 Step 9 — Integration test: min window size — teacher window resists below 900×540, student below 800×540
+- [ ] P5 Step 10 — Integration test: full end-to-end — all 3 tabs work simultaneously with 2 students
+- [ ] P5 Step 11 — Integration test: late-join full sync — new student receives whiteboard + PPT + code state immediately
+- [ ] P5 Step 13 — mvn javafx:run: app launches cleanly with no warnings

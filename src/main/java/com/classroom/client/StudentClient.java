@@ -19,6 +19,7 @@ public class StudentClient {
     private ObjectOutputStream out;
     private ObjectInputStream in;
     private volatile boolean running;
+    private Runnable onDisconnectCallback; // called on FX thread when server drops unexpectedly
     private final Consumer<Message> onMessageReceived; // UI callback
 
     public StudentClient(String host, int port, String studentName,
@@ -67,8 +68,12 @@ public class StudentClient {
             while (running) {
                 Message msg = NetworkUtil.readMessage(in);
                 if (msg == null) {
-                    // Server closed or error
+                    // Server closed or error — capture running state BEFORE disconnect()
+                    boolean wasRunning = running;
                     disconnect();
+                    if (wasRunning && onDisconnectCallback != null) {
+                        Platform.runLater(onDisconnectCallback);
+                    }
                     break;
                 }
                 Platform.runLater(() -> onMessageReceived.accept(msg));
@@ -95,6 +100,15 @@ public class StudentClient {
     /** Returns true if the socket is open and connected. */
     public boolean isConnected() {
         return socket != null && socket.isConnected() && !socket.isClosed();
+    }
+
+    /**
+     * Registers a callback to be invoked on the JavaFX Application Thread
+     * when the server connection is lost unexpectedly (not a graceful disconnect).
+     * Must be called before the listener thread delivers the disconnect.
+     */
+    public void setOnDisconnect(Runnable callback) {
+        this.onDisconnectCallback = callback;
     }
 
     private void closeStreams() {
