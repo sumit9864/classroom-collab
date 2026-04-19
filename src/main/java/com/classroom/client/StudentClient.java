@@ -7,6 +7,7 @@ import javafx.application.Platform;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.function.Consumer;
 
@@ -36,7 +37,8 @@ public class StudentClient {
      * Throws IOException if the connection or authentication fails.
      */
     public void connect() throws Exception {
-        socket = new Socket(host, port);
+        socket = new Socket();
+        socket.connect(new InetSocketAddress(host, port), 5000); // 5-second timeout
 
         // Create OOS first, then OIS — critical ordering
         out = NetworkUtil.createOutputStream(socket);
@@ -75,6 +77,9 @@ public class StudentClient {
                         Platform.runLater(onDisconnectCallback);
                     }
                     break;
+                }
+                if (msg.getType() == MessageType.DISCONNECT) {
+                    running = false; // Expected disconnect: prevent onDisconnectCallback from firing
                 }
                 Platform.runLater(() -> onMessageReceived.accept(msg));
             }

@@ -44,7 +44,9 @@ public class WhiteboardPane extends StackPane {
     private final boolean teacherMode;
     private boolean annotationMode = false;
     private DrawMode drawMode      = DrawMode.FREEHAND;
-    private Color  currentColor    = Color.BLACK;
+    private Color  currentColor       = Color.BLACK;
+    private Color  canvasBgColor      = Color.WHITE;        // canvas fill (theme-aware)
+    private String containerBgStyle   = "#e0e0e0";          // outer pane bg (theme-aware)
     private double strokeWidth     = 2.0;
     private double zoomLevel       = 1.0;
     private boolean isTransparentBackground = false;
@@ -159,7 +161,7 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setMouseTransparent(true);
 
         getChildren().addAll(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
-        setStyle("-fx-background-color: #e0e0e0;");
+        setStyle("-fx-background-color: " + containerBgStyle + ";");
         setMinSize(800, 500);
         setPrefSize(800, 500);
         setMaxSize(800, 500);
@@ -201,7 +203,7 @@ public class WhiteboardPane extends StackPane {
                 if (annotationMode) {
                     gc.clearRect(px - strokeWidth, py - strokeWidth, strokeWidth * 2, strokeWidth * 2);
                 } else {
-                    gc.setStroke(Color.WHITE);
+                    gc.setStroke(canvasBgColor);
                     gc.setLineWidth(strokeWidth * 2);
                     gc.setLineCap(StrokeLineCap.ROUND); gc.setLineJoin(StrokeLineJoin.ROUND);
                     gc.beginPath(); gc.moveTo(px, py);
@@ -891,7 +893,7 @@ public class WhiteboardPane extends StackPane {
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, state.canvasW, state.canvasH);
         } else {
-            wbGc.setFill(Color.WHITE);
+            wbGc.setFill(canvasBgColor);
             wbGc.fillRect(0, 0, state.canvasW, state.canvasH);
         }
         annGc.clearRect(0, 0, state.canvasW, state.canvasH);
@@ -1010,7 +1012,7 @@ public class WhiteboardPane extends StackPane {
         }
 
         if (isEraser && !stroke.isAnnotation()) {
-            gc.setStroke(Color.WHITE);
+            gc.setStroke(canvasBgColor);
             gc.setLineWidth(stroke.getStrokeWidth() * 2);
         } else {
             gc.setStroke(Color.web(stroke.getColorHex()));
@@ -1030,7 +1032,7 @@ public class WhiteboardPane extends StackPane {
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         } else {
-            wbGc.setFill(Color.WHITE);
+            wbGc.setFill(canvasBgColor);
             wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
         }
         history.removeIf(a -> !a.isAnnotation());
@@ -1113,7 +1115,7 @@ public class WhiteboardPane extends StackPane {
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         } else {
-            wbGc.setFill(Color.WHITE);
+            wbGc.setFill(canvasBgColor);
             wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
         }
         annGc.clearRect(0, 0, getCanvasW(), getCanvasH());
@@ -1172,7 +1174,22 @@ public class WhiteboardPane extends StackPane {
         if (transparent) {
             setStyle("-fx-background-color: transparent;");
         } else {
-            setStyle("-fx-background-color: #e0e0e0;");
+            setStyle("-fx-background-color: " + containerBgStyle + ";");
+        }
+        redrawAll();
+    }
+
+    /**
+     * Sets the canvas background color and outer container color for theme switching.
+     * Dark theme: canvas=#1a2035, container=#0d1117
+     * Light theme: canvas=#ffffff, container=#e0e0e0
+     * Triggers a full redraw so existing strokes remain visible.
+     */
+    public void setCanvasBgColor(Color canvas, String containerHex) {
+        this.canvasBgColor    = canvas;
+        this.containerBgStyle = containerHex;
+        if (!isTransparentBackground) {
+            setStyle("-fx-background-color: " + containerHex + ";");
         }
         redrawAll();
     }

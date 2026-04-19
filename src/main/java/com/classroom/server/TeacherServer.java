@@ -131,13 +131,16 @@ public class TeacherServer {
     }
 
     /**
-     * Gracefully shuts down the server: broadcasts DISCONNECT, then closes the socket.
+     * Gracefully shuts down the server.
+     * Sends DISCONNECT synchronously BEFORE interrupting the dispatch thread,
+     * so all connected students receive the message before the thread exits.
      */
     public void stop() {
+        running = false;
+        // Send DISCONNECT directly — bypass the queue, dispatch thread is about to be interrupted
+        doSendAll(new Message(MessageType.DISCONNECT, null, "Teacher"));
         if (dispatchThread  != null) dispatchThread.interrupt();
         if (heartbeatThread != null) heartbeatThread.interrupt();
-        running = false;
-        broadcast(new Message(MessageType.DISCONNECT, null, "Teacher"));
         try {
             if (serverSocket != null && !serverSocket.isClosed()) {
                 serverSocket.close();
@@ -274,4 +277,7 @@ public class TeacherServer {
         }
         return names;
     }
+
+    /** Returns the port this server is listening on. */
+    public int getPort() { return port; }
 }

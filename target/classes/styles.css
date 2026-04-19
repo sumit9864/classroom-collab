@@ -1,0 +1,738 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Classroom Collaboration — "Indigo Night" Dark Theme
+   JavaFX 17 CSS Stylesheet
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Design Tokens (Looked-up Colors) ─────────────────────────────────────── */
+.root {
+    cc-bg:            #0d1117;
+    cc-surface:       #161b22;
+    cc-elevated:      #1f2430;
+    cc-toolbar:       #252d3d;
+    cc-border:        #2d3748;
+    cc-border-light:  #374151;
+    cc-accent:        #4e7fff;
+    cc-accent-dark:   #3a68e8;
+    cc-accent-glow:   #1a2f5a;
+    cc-success:       #2dd4bf;
+    cc-success-bg:    #0d2e2b;
+    cc-danger:        #ef4444;
+    cc-danger-bg:     #2d1515;
+    cc-warning:       #f59e0b;
+    cc-text:          #e2e8f0;
+    cc-text-sec:      #94a3b8;
+    cc-text-muted:    #4a5568;
+    cc-input-bg:      #1a2035;
+    cc-input-border:  #334155;
+
+    -fx-font-family: "System";
+    -fx-font-size: 13px;
+    -fx-background-color: cc-bg;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LABELS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.label {
+    -fx-text-fill: cc-text;
+}
+
+.lbl-title {
+    -fx-text-fill: cc-text;
+    -fx-font-size: 24px;
+    -fx-font-weight: bold;
+}
+
+.lbl-subtitle {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 13px;
+}
+
+.lbl-section {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+}
+
+.lbl-topbar {
+    -fx-text-fill: cc-text;
+    -fx-font-size: 15px;
+    -fx-font-weight: bold;
+}
+
+.lbl-ip {
+    -fx-text-fill: cc-success;
+    -fx-font-size: 12px;
+    -fx-background-color: cc-success-bg;
+    -fx-background-radius: 5px;
+    -fx-padding: 3px 10px;
+}
+
+.lbl-count {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 11px;
+    -fx-background-color: cc-elevated;
+    -fx-background-radius: 8px;
+    -fx-padding: 2px 8px;
+}
+
+.lbl-panel-header {
+    -fx-text-fill: cc-text;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+.lbl-muted {
+    -fx-text-fill: cc-text-muted;
+    -fx-font-style: italic;
+    -fx-font-size: 14px;
+}
+
+.lbl-status-ok {
+    -fx-text-fill: cc-success;
+    -fx-font-size: 13px;
+    -fx-font-weight: bold;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.button {
+    -fx-background-color: cc-elevated;
+    -fx-text-fill: cc-text;
+    -fx-background-radius: 6px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 6px;
+    -fx-border-width: 1px;
+    -fx-padding: 6px 14px;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+}
+
+.button:hover {
+    -fx-background-color: cc-toolbar;
+    -fx-border-color: cc-accent;
+    -fx-text-fill: cc-text;
+}
+
+.button:pressed {
+    -fx-background-color: cc-border;
+}
+
+.button:disabled {
+    -fx-opacity: 0.45;
+    -fx-cursor: default;
+}
+
+/* Primary: big blue action button */
+.btn-primary {
+    -fx-background-color: cc-accent;
+    -fx-text-fill: white;
+    -fx-background-radius: 8px;
+    -fx-border-color: cc-accent-dark;
+    -fx-border-radius: 8px;
+    -fx-border-width: 1px;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-padding: 10px 28px;
+    -fx-cursor: hand;
+}
+
+.btn-primary:hover {
+    -fx-background-color: cc-accent-dark;
+    -fx-border-color: derive(cc-accent-dark, -10%);
+}
+
+.btn-primary:pressed {
+    -fx-background-color: derive(cc-accent-dark, -15%);
+}
+
+/* Danger: red destructive actions */
+.btn-danger {
+    -fx-background-color: cc-danger;
+    -fx-text-fill: white;
+    -fx-background-radius: 6px;
+    -fx-border-color: derive(cc-danger, -15%);
+    -fx-border-radius: 6px;
+    -fx-border-width: 1px;
+    -fx-padding: 6px 14px;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.btn-danger:hover {
+    -fx-background-color: derive(cc-danger, -10%);
+}
+
+/* Subtle: toolbar actions */
+.btn-subtle {
+    -fx-background-color: transparent;
+    -fx-text-fill: cc-text-sec;
+    -fx-background-radius: 5px;
+    -fx-border-color: transparent;
+    -fx-border-radius: 5px;
+    -fx-padding: 5px 10px;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+}
+
+.btn-subtle:hover {
+    -fx-background-color: cc-elevated;
+    -fx-text-fill: cc-text;
+    -fx-border-color: cc-border;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TOGGLE BUTTONS  (shape tools, draw mode selectors)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.toggle-button {
+    -fx-background-color: cc-elevated;
+    -fx-text-fill: cc-text-sec;
+    -fx-background-radius: 5px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 5px;
+    -fx-border-width: 1px;
+    -fx-padding: 5px 11px;
+    -fx-cursor: hand;
+    -fx-font-size: 12px;
+}
+
+.toggle-button:hover {
+    -fx-background-color: cc-toolbar;
+    -fx-text-fill: cc-text;
+    -fx-border-color: cc-border-light;
+}
+
+.toggle-button:selected {
+    -fx-background-color: cc-accent;
+    -fx-text-fill: white;
+    -fx-border-color: cc-accent-dark;
+    -fx-font-weight: bold;
+}
+
+.toggle-button:selected:hover {
+    -fx-background-color: cc-accent-dark;
+}
+
+/* Role selector cards on login screen */
+.role-toggle {
+    -fx-background-color: cc-elevated;
+    -fx-text-fill: cc-text-sec;
+    -fx-background-radius: 10px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 10px;
+    -fx-border-width: 2px;
+    -fx-padding: 16px 28px;
+    -fx-cursor: hand;
+    -fx-font-size: 13px;
+    -fx-min-width: 160px;
+    -fx-alignment: center;
+}
+
+.role-toggle:hover {
+    -fx-background-color: cc-toolbar;
+    -fx-text-fill: cc-text;
+    -fx-border-color: cc-border-light;
+}
+
+.role-toggle:selected {
+    -fx-background-color: cc-accent-glow;
+    -fx-text-fill: cc-accent;
+    -fx-border-color: cc-accent;
+    -fx-font-weight: bold;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RADIO BUTTONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.radio-button {
+    -fx-text-fill: cc-text;
+}
+
+.radio-button .radio {
+    -fx-border-color: cc-border-light;
+    -fx-background-color: cc-input-bg;
+    -fx-background-radius: 8px;
+    -fx-border-radius: 8px;
+}
+
+.radio-button:selected .radio {
+    -fx-background-color: cc-accent;
+    -fx-border-color: cc-accent;
+}
+
+.radio-button:selected .dot {
+    -fx-background-color: white;
+    -fx-background-radius: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TEXT FIELDS & TEXT AREAS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.text-field {
+    -fx-background-color: cc-input-bg;
+    -fx-text-fill: cc-text;
+    -fx-prompt-text-fill: cc-text-muted;
+    -fx-border-color: cc-input-border;
+    -fx-border-radius: 6px;
+    -fx-background-radius: 6px;
+    -fx-padding: 8px 12px;
+    -fx-border-width: 1px;
+    -fx-highlight-fill: cc-accent;
+    -fx-highlight-text-fill: white;
+}
+
+.text-field:focused {
+    -fx-border-color: cc-accent;
+    -fx-background-color: derive(cc-input-bg, 3%);
+}
+
+.text-area {
+    -fx-control-inner-background: cc-input-bg;
+    -fx-text-fill: cc-text;
+    -fx-prompt-text-fill: cc-text-muted;
+    -fx-background-color: cc-input-bg;
+    -fx-border-color: cc-input-border;
+    -fx-border-radius: 6px;
+    -fx-background-radius: 6px;
+    -fx-background-insets: 0;
+    -fx-highlight-fill: cc-accent;
+}
+
+.text-area .content {
+    -fx-background-color: cc-input-bg;
+    -fx-background-radius: 6px;
+}
+
+.text-area:focused {
+    -fx-border-color: cc-accent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LIST VIEW  (student list)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.list-view {
+    -fx-background-color: cc-bg;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 6px;
+    -fx-border-width: 1px;
+    -fx-background-insets: 0;
+    -fx-padding: 4px;
+    -fx-focus-color: transparent;
+    -fx-faint-focus-color: transparent;
+}
+
+.list-view .placeholder .label {
+    -fx-text-fill: cc-text-muted;
+    -fx-font-style: italic;
+    -fx-font-size: 12px;
+}
+
+.list-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: cc-text;
+    -fx-padding: 8px 10px;
+    -fx-background-radius: 5px;
+    -fx-font-size: 13px;
+}
+
+.list-cell:odd {
+    -fx-background-color: transparent;
+}
+
+.list-cell:hover {
+    -fx-background-color: cc-elevated;
+}
+
+.list-cell:selected {
+    -fx-background-color: cc-accent-glow;
+    -fx-text-fill: cc-accent;
+}
+
+.list-cell:selected:hover {
+    -fx-background-color: derive(cc-accent-glow, 5%);
+}
+
+.list-cell:empty {
+    -fx-background-color: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TAB PANE
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tab-pane {
+    -fx-background-color: cc-surface;
+}
+
+.tab-pane .tab-header-area {
+    -fx-background-color: cc-elevated;
+    -fx-padding: 0;
+}
+
+.tab-pane .tab-header-background {
+    -fx-background-color: cc-elevated;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 0 1 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: cc-elevated;
+    -fx-background-radius: 0;
+    -fx-padding: 9px 20px;
+    -fx-cursor: hand;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab > .tab-container > .tab-label {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 13px;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:hover {
+    -fx-background-color: cc-toolbar;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:hover > .tab-container > .tab-label {
+    -fx-text-fill: cc-text;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-background-color: cc-surface;
+    -fx-border-color: cc-accent;
+    -fx-border-insets: 0;
+    -fx-border-width: 0 0 2 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected > .tab-container > .tab-label {
+    -fx-text-fill: cc-accent;
+    -fx-font-weight: bold;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCROLL PANE
+   ═══════════════════════════════════════════════════════════════════════════ */
+.scroll-pane {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+    -fx-focus-color: transparent;
+    -fx-faint-focus-color: transparent;
+}
+
+.scroll-pane > .viewport {
+    -fx-background-color: cc-bg;
+}
+
+.scroll-bar:horizontal, .scroll-bar:vertical {
+    -fx-background-color: cc-surface;
+    -fx-background-insets: 0;
+}
+
+.scroll-bar .track {
+    -fx-background-color: cc-surface;
+    -fx-background-radius: 2px;
+    -fx-border-color: transparent;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: cc-border;
+    -fx-background-radius: 3px;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: cc-text-muted;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: cc-surface;
+    -fx-border-color: transparent;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-background-color: cc-text-muted;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEPARATOR
+   ═══════════════════════════════════════════════════════════════════════════ */
+.separator .line {
+    -fx-border-color: cc-border;
+    -fx-border-style: solid;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   COMBO BOX
+   ═══════════════════════════════════════════════════════════════════════════ */
+.combo-box {
+    -fx-background-color: cc-input-bg;
+    -fx-border-color: cc-input-border;
+    -fx-border-radius: 6px;
+    -fx-background-radius: 6px;
+}
+
+.combo-box .list-cell {
+    -fx-text-fill: cc-text;
+    -fx-background-color: cc-input-bg;
+    -fx-padding: 4px 8px;
+}
+
+.combo-box:hover {
+    -fx-border-color: cc-border-light;
+}
+
+.combo-box:focused {
+    -fx-border-color: cc-accent;
+}
+
+.combo-box .arrow-button {
+    -fx-background-color: cc-input-bg;
+    -fx-border-color: transparent;
+}
+
+.combo-box .arrow {
+    -fx-background-color: cc-text-sec;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: cc-surface;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 6px;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.5), 12, 0, 0, 3);
+}
+
+.combo-box-popup .list-cell {
+    -fx-text-fill: cc-text;
+    -fx-background-color: cc-surface;
+    -fx-padding: 7px 12px;
+}
+
+.combo-box-popup .list-cell:hover {
+    -fx-background-color: cc-elevated;
+}
+
+.combo-box-popup .list-cell:selected {
+    -fx-background-color: cc-accent-glow;
+    -fx-text-fill: cc-accent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SLIDER
+   ═══════════════════════════════════════════════════════════════════════════ */
+.slider .track {
+    -fx-background-color: cc-border;
+    -fx-background-radius: 3px;
+    -fx-padding: 2px;
+}
+
+.slider .thumb {
+    -fx-background-color: cc-accent;
+    -fx-background-radius: 10px;
+    -fx-border-color: derive(cc-accent, -15%);
+    -fx-border-radius: 10px;
+    -fx-border-width: 1px;
+    -fx-effect: dropshadow(gaussian, rgba(78,127,255,0.4), 6, 0, 0, 0);
+}
+
+.slider .thumb:hover {
+    -fx-background-color: cc-accent-dark;
+}
+
+.slider .axis {
+    -fx-tick-label-fill: cc-text-muted;
+    -fx-font-size: 10px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   COLOR PICKER
+   ═══════════════════════════════════════════════════════════════════════════ */
+.color-picker {
+    -fx-background-color: cc-input-bg;
+    -fx-border-color: cc-input-border;
+    -fx-border-radius: 6px;
+    -fx-background-radius: 6px;
+    -fx-color-label-visible: false;
+}
+
+.color-picker .arrow-button {
+    -fx-background-color: cc-input-bg;
+    -fx-border-color: transparent;
+}
+
+.color-picker:hover {
+    -fx-border-color: cc-border-light;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   STRUCTURAL REGIONS  (custom style classes added in Java)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+.top-bar {
+    -fx-background-color: cc-elevated;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 10px 16px;
+}
+
+/* ── Main drawing toolbar ────────────────────────────────────────────────── */
+.toolbar-main {
+    -fx-background-color: cc-toolbar;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 7px 14px;
+}
+
+/* ── Shape tools toolbar ─────────────────────────────────────────────────── */
+.toolbar-shape {
+    -fx-background-color: cc-surface;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 5px 14px;
+}
+
+/* ── Left student panel ──────────────────────────────────────────────────── */
+.left-panel {
+    -fx-background-color: cc-surface;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 1 0 0;
+    -fx-padding: 14px 12px;
+    -fx-min-width: 190px;
+    -fx-pref-width: 200px;
+}
+
+/* ── PPT slide controls ──────────────────────────────────────────────────── */
+.ppt-controls {
+    -fx-background-color: cc-toolbar;
+    -fx-border-color: cc-border;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 8px 14px;
+}
+
+/* ── Code toolbar ────────────────────────────────────────────────────────── */
+.code-toolbar {
+    -fx-background-color: #252526;
+    -fx-border-color: #3a3a3a;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 7px 14px;
+}
+
+/* ── Status bar (student) ────────────────────────────────────────────────── */
+.status-bar {
+    -fx-background-color: cc-elevated;
+    -fx-border-color: cc-border;
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 5px 14px;
+}
+
+/* ── PPT center area ─────────────────────────────────────────────────────── */
+.ppt-center {
+    -fx-background-color: #1a1a2a;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LOGIN SCREEN  (card + background)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.login-bg {
+    -fx-background-color: cc-bg;
+}
+
+.login-card {
+    -fx-background-color: cc-surface;
+    -fx-background-radius: 14px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 14px;
+    -fx-border-width: 1px;
+    -fx-padding: 40px 48px;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.6), 28, 0, 0, 6);
+    -fx-max-width: 420px;
+    -fx-min-width: 380px;
+}
+
+.login-logo-box {
+    -fx-background-color: cc-accent-glow;
+    -fx-background-radius: 12px;
+    -fx-border-color: cc-accent;
+    -fx-border-radius: 12px;
+    -fx-border-width: 1px;
+    -fx-padding: 12px 18px;
+}
+
+.login-logo-label {
+    -fx-text-fill: cc-accent;
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+}
+
+.login-app-name {
+    -fx-text-fill: cc-text;
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+}
+
+.login-app-desc {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 12px;
+}
+
+.login-field-label {
+    -fx-text-fill: cc-text-sec;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.login-field {
+    -fx-background-color: cc-input-bg;
+    -fx-text-fill: cc-text;
+    -fx-prompt-text-fill: cc-text-muted;
+    -fx-border-color: cc-input-border;
+    -fx-border-radius: 7px;
+    -fx-background-radius: 7px;
+    -fx-padding: 9px 13px;
+    -fx-border-width: 1px;
+    -fx-font-size: 13px;
+    -fx-pref-width: 280px;
+}
+
+.login-field:focused {
+    -fx-border-color: cc-accent;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ALERT / DIALOG
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dialog-pane {
+    -fx-background-color: cc-surface;
+    -fx-border-color: cc-border;
+    -fx-border-width: 1px;
+}
+
+.dialog-pane .header-panel {
+    -fx-background-color: cc-elevated;
+}
+
+.dialog-pane .header-panel .label {
+    -fx-text-fill: cc-text;
+    -fx-font-weight: bold;
+}
+
+.dialog-pane .content.label {
+    -fx-text-fill: cc-text-sec;
+}
+
+.dialog-pane .button-bar .button {
+    -fx-background-color: cc-elevated;
+    -fx-text-fill: cc-text;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 5px;
+    -fx-background-radius: 5px;
+}
+
+.dialog-pane .button-bar .button:hover {
+    -fx-background-color: cc-toolbar;
+    -fx-border-color: cc-accent;
+}

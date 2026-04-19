@@ -3,7 +3,6 @@ package com.classroom.model;
 public enum MessageType {
     AUTH_REQUEST,        // Student → Teacher: join request with student name
     AUTH_SUCCESS,        // Teacher → Student: join accepted
-    AUTH_FAIL,           // Teacher → Student: join rejected
     STUDENT_LIST_UPDATE, // Teacher → All: updated list of connected student names
     DISCONNECT,          // Either direction: graceful disconnect notice
     HEARTBEAT,           // Either direction: keep-alive ping (Phase 5 use)

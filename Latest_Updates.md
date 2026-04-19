@@ -1,6 +1,6 @@
 # Latest Updates
 
-## Current Phase: 5 — Integration, Polish & Final Build
+## Current Phase: Post-Phase-5 — Bug Fixes & Enhancements
 ## Date: 2026-04-18
 
 ---
@@ -33,11 +33,12 @@
 | File | Reason for Change |
 |------|-------------------|
 | `pom.xml` | Phase 5: replaced maven-shade-plugin block to add `ServicesResourceTransformer` (POI ServiceLoader merge) and signature-file filters (strip `.SF`/`.DSA`/`.RSA` to prevent `SecurityException` at startup) |
-| `src/main/java/com/classroom/server/TeacherServer.java` | Phase 5: added `heartbeatThread` field; added 30-second HEARTBEAT daemon thread at end of `start()`; updated `stop()` to interrupt `heartbeatThread` before `dispatchThread`, both before `running = false` |
-| `src/main/java/com/classroom/client/StudentClient.java` | Phase 5: added `onDisconnectCallback` field; added `setOnDisconnect(Runnable)` setter; rewrote `startListenerThread()` to capture `wasRunning` before calling `disconnect()` so callback fires only on unexpected server drop |
-| `src/main/java/com/classroom/ui/StudentUI.java` | Phase 5: added `HEARTBEAT` no-op case to `handleMessage()`; added `stage.setMinWidth(800)` / `stage.setMinHeight(540)` before `stage.setScene()`; wired disconnect callback showing `Alert.WARNING` with `stage.isShowing()` guard |
-| `src/main/java/com/classroom/ui/TeacherUI.java` | Phase 5: added `stage.setMinWidth(900)` / `stage.setMinHeight(540)` before `stage.setScene()` |
-| `Latest_Updates.md` | Updated to document Phase 5 completion |
+| `src/main/java/com/classroom/server/TeacherServer.java` | Phase 5+: rewrote `stop()` to send `DISCONNECT` synchronously before interrupting threads; added `getPort()` getter |
+| `src/main/java/com/classroom/client/StudentClient.java` | Phase 5+: updated `connect()` to use `InetSocketAddress` with an explicit 5000ms timeout to prevent UI freeze on bad IP |
+| `src/main/java/com/classroom/ui/LoginScreen.java` | Phase 5+: added port range validation (1025-65535) and reserved name block ("Teacher", "Teacher_PPT") |
+| `src/main/java/com/classroom/model/MessageType.java` | Phase 5+: removed unused `AUTH_FAIL` dead code |
+| `src/main/java/com/classroom/ui/StudentUI.java` | Phase 5+: fixed empty `CODE_SHARE` auto-switching; added line numbers and "Copy to Clipboard" button logic to Code tab |
+| `src/main/java/com/classroom/ui/TeacherUI.java` | Phase 5+: added IP/Port display and connected student count; added Clear button to Code tab; added arrow key PPT navigation |
 
 ---
 
@@ -120,10 +121,28 @@
 - [x] P5 Step 4 — StudentUI.java: HEARTBEAT no-op case added; min window 800×540; disconnect alert wired with stage.isShowing() guard; mvn clean compile passes
 - [x] P5 Step 5 — TeacherUI.java: min window 900×540 added before stage.setScene(); mvn clean compile passes
 - [x] P5 Step 12 — mvn clean package: BUILD SUCCESS, target/classroom-collab-1.0-SNAPSHOT.jar produced with zero errors
-- [ ] P5 Step 6 — Integration test: HEARTBEAT — wait 31s, confirm no "Unhandled message: HEARTBEAT" on student console
-- [ ] P5 Step 7 — Integration test: unexpected disconnect — kill teacher process, student sees "Connection Lost" alert
-- [ ] P5 Step 8 — Integration test: graceful disconnect — teacher clicks Stop Session, student sees "Session ended by teacher." (not the new alert)
-- [ ] P5 Step 9 — Integration test: min window size — teacher window resists below 900×540, student below 800×540
-- [ ] P5 Step 10 — Integration test: full end-to-end — all 3 tabs work simultaneously with 2 students
-- [ ] P5 Step 11 — Integration test: late-join full sync — new student receives whiteboard + PPT + code state immediately
-- [ ] P5 Step 13 — mvn javafx:run: app launches cleanly with no warnings
+- [x] P5 Step 6 — Integration test: HEARTBEAT — wait 31s, confirm no "Unhandled message: HEARTBEAT" on student console
+- [x] P5 Step 7 — Integration test: unexpected disconnect — kill teacher process, student sees "Connection Lost" alert
+- [x] P5 Step 8 — Integration test: graceful disconnect — teacher clicks Stop Session, student sees "Session ended by teacher." (not the new alert)
+- [x] P5 Step 9 — Integration test: min window size — teacher window resists below 900×540, student below 800×540
+- [x] P5 Step 10 — Integration test: full end-to-end — all 3 tabs work simultaneously with 2 students
+- [x] P5 Step 11 — Integration test: late-join full sync — new student receives whiteboard + PPT + code state immediately
+- [x] P5 Step 13 — mvn javafx:run: app launches cleanly with no warnings
+
+### Post-Phase-5 — Bug Fixes & Enhancements
+- [x] P5+ Step 1 — TeacherServer.java: fixed DISCONNECT order; added getPort(); mvn clean compile passes
+- [x] P5+ Step 2 — StudentClient.java: added 5000ms explicit timeout to connection; mvn clean compile passes
+- [x] P5+ Step 3 — LoginScreen.java: port range rules (1025-65535) and reserved name block ("Teacher", "Teacher_PPT"); mvn clean compile passes
+- [x] P5+ Step 4 — MessageType.java: removed AUTH_FAIL dead code; mvn clean compile passes
+- [x] P5+ Step 5 — TeacherUI.java: IP/Port view, student count label, Clear code button & explicit blank message, PPT arrow keystrokes
+- [x] P5+ Step 6 — StudentUI.java: fixed empty-code tab switcher, added line numbers text area, added "Copy to Clipboard" with 2-second PausedTransition
+- [x] Test 7a — Graceful disconnect dialog (Session ended by teacher)
+- [x] Test 7b — Bad IP timeout dialog (5-second connection timeout, non-blocking UI alert)
+- [x] Test 7c — Reserved name block triggers correctly 
+- [x] Test 7d — Port range block triggers correctly 
+- [x] Test 7e — IP and Port displayed on teacher window bar
+- [x] Test 7f — Student count dynamically adjusts
+- [x] Test 7g — Clear Code empties student board without auto-switching tabs
+- [x] Test 7h — PPT Arrow Key navigation
+- [x] Test 7i — Copy Button visual toggle and reset
+- [x] Test 7j — Code tab Line Numbers mirror dynamic text content
