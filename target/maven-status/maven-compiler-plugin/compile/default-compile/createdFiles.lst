@@ -2,6 +2,7 @@ com\classroom\model\ShapeData.class
 com\classroom\server\ClientHandler.class
 com\classroom\ui\StudentUI$1.class
 com\classroom\model\CodeData.class
+com\classroom\model\FileShareData.class
 com\classroom\ui\LoginScreen.class
 com\classroom\ui\WhiteboardPane$BoardAction$Type.class
 com\classroom\Main.class
@@ -17,6 +18,7 @@ com\classroom\server\TeacherServer.class
 com\classroom\ui\WhiteboardPane$FullState.class
 com\classroom\model\StrokeData.class
 com\classroom\ui\WhiteboardPane$DrawMode.class
+com\classroom\ui\StudentUI$FileReceiveEntry.class
 com\classroom\server\ClientHandler$1.class
 com\classroom\model\SlideData.class
 com\classroom\ui\WhiteboardPane$BoardAction.class

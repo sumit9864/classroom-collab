@@ -1,6 +1,7 @@
 package com.classroom.ui;
 
 import com.classroom.model.CodeData;
+import com.classroom.model.FileShareData;
 import com.classroom.model.Message;
 import com.classroom.model.MessageType;
 import com.classroom.model.SlideData;
@@ -21,8 +22,11 @@ import javafx.stage.Stage;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
 import java.net.InetAddress;
 import java.util.List;
+import java.util.UUID;
 import javafx.animation.PauseTransition;
 import javafx.util.Duration;
 
@@ -31,13 +35,10 @@ public class TeacherUI {
     // ── Theme constants ────────────────────────────────────────────────────
     private static final String THEME_DARK  = "/theme-dark.css";
     private static final String THEME_LIGHT = "/theme-light.css";
-    // Dark canvas / container colors
     private static final Color  DARK_CANVAS    = Color.web("#1a2035");
     private static final String DARK_CONTAINER = "#0d1117";
-    // Light canvas / container colors
     private static final Color  LIGHT_CANVAS    = Color.WHITE;
     private static final String LIGHT_CONTAINER = "#e0e0e0";
-    // Code editor styles
     private static final String CODE_EDITOR_DARK  =
             "-fx-control-inner-background: #1e1e1e; -fx-text-fill: #d4d4d4; " +
             "-fx-background-color: #1e1e1e; -fx-background-insets: 0; -fx-padding: 0; " +
@@ -57,22 +58,27 @@ public class TeacherUI {
             "-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-border-width: 0;";
     private static final String CODE_AREA_LIGHT   = "-fx-background-color: #fafafa; -fx-border-width: 0;";
 
-    // ── State ──────────────────────────────────────────────────────────────
-    private boolean isDarkTheme = false; // default = light
+    // ── File-sharing constant ──────────────────────────────────────────────
+    // Must match FileShareData.CHUNK_SIZE; referenced here for clarity.
+    private static final int CHUNK_SIZE = FileShareData.CHUNK_SIZE;
+
+    // ── Theme state ────────────────────────────────────────────────────────
+    private boolean isDarkTheme = false;
     private Scene   mainScene;
 
-    // ── References updated on theme switch ────────────────────────────────
+    // ── Dynamic refs updated on theme switch ───────────────────────────────
     private TextArea codeEditor;
     private TextArea lineNumbers;
     private HBox     codeArea;
 
+    // ── Core state ─────────────────────────────────────────────────────────
     private final Stage stage;
     private TeacherServer server;
     private final ListView<String> studentListView;
     private WhiteboardPane whiteboardPane;
     private WhiteboardPane pptWhiteboardPane;
 
-    // Phase 3
+    // Phase 3 — PPT
     private PptService pptService;
     private ImageView  pptImageView;
     private Label      slideCountLabel;
@@ -87,12 +93,20 @@ public class TeacherUI {
     private Tab     whiteboardTab;
     private Tab     pptTab;
     private Tab     codeTab;
+    private Tab     fileTab;
     private Label   studentCountLabel;
 
+    // Phase 5 — File sharing UI refs
+    private VBox  fileListBox;       // holds one HBox per file transfer
+    private Label fileEmptyLabel;    // shown when no files have been shared yet
+    private boolean fileTabHasItems = false;
+
+    // ── Helpers ────────────────────────────────────────────────────────────
     private WhiteboardPane getActivePane() {
-        Tab selected = tabPane.getSelectionModel().getSelectedItem();
-        if (pptTab  != null && selected == pptTab)  return pptWhiteboardPane;
-        if (codeTab != null && selected == codeTab) return null;
+        Tab sel = tabPane.getSelectionModel().getSelectedItem();
+        if (pptTab  != null && sel == pptTab)  return pptWhiteboardPane;
+        if (codeTab != null && sel == codeTab) return null;
+        if (fileTab != null && sel == fileTab) return null;
         return whiteboardPane;
     }
 
@@ -111,24 +125,26 @@ public class TeacherUI {
 
     public void setServer(TeacherServer server) { this.server = server; }
 
-    // ── Theme switching ────────────────────────────────────────────────────
+    // ── Theme application ──────────────────────────────────────────────────
     private void applyTheme(boolean dark) {
         isDarkTheme = dark;
         if (mainScene == null) return;
         mainScene.getStylesheets().clear();
-        mainScene.getStylesheets().add(getClass().getResource(dark ? THEME_DARK : THEME_LIGHT).toExternalForm());
-        Color canvas    = dark ? DARK_CANVAS    : LIGHT_CANVAS;
-        String container = dark ? DARK_CONTAINER : LIGHT_CONTAINER;
-        whiteboardPane.setCanvasBgColor(canvas, container);
-        pptWhiteboardPane.setCanvasBgColor(canvas, container);
+        mainScene.getStylesheets().add(
+                getClass().getResource(dark ? THEME_DARK : THEME_LIGHT).toExternalForm());
+        whiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
+                                        dark ? DARK_CONTAINER : LIGHT_CONTAINER);
+        pptWhiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
+                                           dark ? DARK_CONTAINER : LIGHT_CONTAINER);
         if (codeEditor  != null) codeEditor .setStyle(dark ? CODE_EDITOR_DARK : CODE_EDITOR_LIGHT);
         if (lineNumbers != null) lineNumbers.setStyle(dark ? CODE_NUMS_DARK   : CODE_NUMS_LIGHT);
         if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
     }
 
+    // ── show() ─────────────────────────────────────────────────────────────
     public void show() {
 
-        // ── THEME TOGGLE BUTTON ────────────────────────────────────────────
+        // ── THEME TOGGLE ───────────────────────────────────────────────────
         Button themeBtn = new Button("\u263E  Dark Mode");
         themeBtn.getStyleClass().add("btn-theme");
         themeBtn.setOnAction(e -> {
@@ -271,7 +287,6 @@ public class TeacherUI {
         });
 
         Button undoBtn = new Button("Undo");
-        undoBtn.setTooltip(new Tooltip("Undo last action"));
         undoBtn.setOnAction(e -> {
             WhiteboardPane pane = getActivePane();
             if (pane == null) return;
@@ -279,7 +294,6 @@ public class TeacherUI {
             if (server != null) server.broadcast(new Message(MessageType.UNDO, null, getActiveSender()));
         });
         Button redoBtn = new Button("Redo");
-        redoBtn.setTooltip(new Tooltip("Redo action"));
         redoBtn.setOnAction(e -> {
             WhiteboardPane pane = getActivePane();
             if (pane == null) return;
@@ -385,13 +399,11 @@ public class TeacherUI {
         pptFileLabel.getStyleClass().add("lbl-subtitle");
         HBox.setHgrow(pptFileLabel, Priority.ALWAYS);
 
-        prevSlideBtn = new Button("\u2190 Prev");
-        prevSlideBtn.setDisable(true);
+        prevSlideBtn = new Button("\u2190 Prev"); prevSlideBtn.setDisable(true);
         slideCountLabel = new Label("\u2014 / \u2014");
         slideCountLabel.getStyleClass().add("lbl-section");
         slideCountLabel.setPadding(new Insets(0, 6, 0, 6));
-        nextSlideBtn = new Button("Next \u2192");
-        nextSlideBtn.setDisable(true);
+        nextSlideBtn = new Button("Next \u2192"); nextSlideBtn.setDisable(true);
 
         HBox pptControls = new HBox(10, loadPptBtn, pptFileLabel,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
@@ -427,12 +439,11 @@ public class TeacherUI {
         codeControls.setAlignment(Pos.CENTER_LEFT);
         codeControls.getStyleClass().add("code-toolbar");
 
-        // Promoted to instance fields for theme switching
         codeEditor = new TextArea();
         codeEditor.setPromptText("Type or paste code here \u2014 it broadcasts to students automatically...");
         codeEditor.setFont(javafx.scene.text.Font.font("Monospaced", 14));
         codeEditor.setWrapText(false);
-        codeEditor.setStyle(CODE_EDITOR_LIGHT); // default = light
+        codeEditor.setStyle(CODE_EDITOR_LIGHT);
         HBox.setHgrow(codeEditor, Priority.ALWAYS);
 
         lineNumbers = new TextArea("1");
@@ -443,7 +454,7 @@ public class TeacherUI {
         lineNumbers.setMaxWidth(45);
         lineNumbers.setFont(javafx.scene.text.Font.font("Monospaced", 14));
         lineNumbers.setWrapText(false);
-        lineNumbers.setStyle(CODE_NUMS_LIGHT); // default = light
+        lineNumbers.setStyle(CODE_NUMS_LIGHT);
 
         codeEditor.textProperty().addListener((obs, old, text) -> {
             String[] lines = text.split("\n", -1);
@@ -453,7 +464,7 @@ public class TeacherUI {
         });
 
         codeArea = new HBox(lineNumbers, codeEditor);
-        codeArea.setStyle(CODE_AREA_LIGHT); // default = light
+        codeArea.setStyle(CODE_AREA_LIGHT);
         VBox.setVgrow(codeArea, Priority.ALWAYS);
 
         codeEditor.setTextFormatter(new TextFormatter<>(change -> {
@@ -490,12 +501,15 @@ public class TeacherUI {
         codeTab = new Tab("  Code Sharing  ", codePanel);
         codeTab.setClosable(false);
 
+        // ── TAB 4: FILE SHARING ────────────────────────────────────────────
+        fileTab = buildFileTab();
+
         // ── TABPANE ────────────────────────────────────────────────────────
-        tabPane = new TabPane(whiteboardTab, pptTab, codeTab);
+        tabPane = new TabPane(whiteboardTab, pptTab, codeTab, fileTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         tabPane.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
-            boolean drawVisible = (newTab != codeTab);
+            boolean drawVisible = (newTab != codeTab && newTab != fileTab);
             toolbar.setVisible(drawVisible);     toolbar.setManaged(drawVisible);
             shapeToolbar.setVisible(drawVisible); shapeToolbar.setManaged(drawVisible);
         });
@@ -543,13 +557,8 @@ public class TeacherUI {
                         loadPptBtn.setDisable(false);
                         pptFileLabel.setText("Failed to load");
                         pptFileLabel.setStyle("-fx-text-fill: #dc2626;");
-                        Alert alert = new Alert(Alert.AlertType.ERROR);
-                        alert.setTitle("PPTX Load Error");
-                        alert.setHeaderText("Could not load the selected file");
-                        alert.setContentText(errorMsg);
-                        alert.getDialogPane().getStylesheets().add(
-                                getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
-                        alert.showAndWait();
+                        showAlert(Alert.AlertType.ERROR, "PPTX Load Error",
+                                "Could not load the selected file", errorMsg);
                     }
             );
         });
@@ -565,11 +574,8 @@ public class TeacherUI {
         stage.setMinWidth(900);
         stage.setMinHeight(540);
 
-        // ── APPLY INITIAL LIGHT THEME ──────────────────────────────────────
         mainScene = new Scene(root, 1100, 640);
-        mainScene.getStylesheets().add(
-                getClass().getResource(THEME_LIGHT).toExternalForm());
-        // Light canvas for whiteboard (default)
+        mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
@@ -587,6 +593,210 @@ public class TeacherUI {
         });
 
         refreshStudentList();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  FILE SHARING — Tab builder + send logic
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** Builds the complete File Sharing tab content. */
+    private Tab buildFileTab() {
+        // ── Top toolbar ────────────────────────────────────────────────────
+        Button shareFileBtn = new Button("\uD83D\uDCC1  Share File...");
+        shareFileBtn.getStyleClass().add("btn-primary");
+
+        Label shareHintLabel = new Label("All connected students will receive the file and can save it.");
+        shareHintLabel.getStyleClass().add("lbl-subtitle");
+        HBox.setHgrow(shareHintLabel, Priority.ALWAYS);
+
+        HBox fileToolbar = new HBox(12, shareFileBtn, shareHintLabel);
+        fileToolbar.setAlignment(Pos.CENTER_LEFT);
+        fileToolbar.getStyleClass().add("ppt-controls");
+
+        // ── File list area ─────────────────────────────────────────────────
+        fileEmptyLabel = new Label("No files shared yet.\nUse \"Share File...\" to send any file to all students.");
+        fileEmptyLabel.getStyleClass().add("lbl-muted");
+        fileEmptyLabel.setTextAlignment(javafx.scene.text.TextAlignment.CENTER);
+
+        fileListBox = new VBox(6);
+        fileListBox.setPadding(new Insets(10));
+        fileListBox.getChildren().add(fileEmptyLabel);
+
+        ScrollPane fileScroll = new ScrollPane(fileListBox);
+        fileScroll.setFitToWidth(true);
+        fileScroll.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
+
+        VBox filePanel = new VBox(fileToolbar, fileScroll);
+        VBox.setVgrow(fileScroll, Priority.ALWAYS);
+
+        // ── Wire share button ──────────────────────────────────────────────
+        shareFileBtn.setOnAction(e -> {
+            if (server == null) {
+                showAlert(Alert.AlertType.WARNING, "Not Connected",
+                        "No active session", "Start a session before sharing files.");
+                return;
+            }
+            List<String> connected = server.getConnectedNames();
+            if (connected.isEmpty()) {
+                showAlert(Alert.AlertType.INFORMATION, "No Students Connected",
+                        "No students are currently connected",
+                        "Wait for students to join before sharing files.");
+                return;
+            }
+
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Choose a file to share with all students");
+            fc.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("All Files", "*.*"));
+            File chosen = fc.showOpenDialog(stage);
+            if (chosen == null) return; // user cancelled
+
+            // Validate the chosen file
+            if (!chosen.exists() || !chosen.isFile()) {
+                showAlert(Alert.AlertType.ERROR, "Invalid File",
+                        "Cannot read file", "The selected file does not exist or is not accessible.");
+                return;
+            }
+            if (chosen.length() == 0) {
+                showAlert(Alert.AlertType.ERROR, "Empty File",
+                        "File is empty", "Cannot share an empty file.");
+                return;
+            }
+
+            // Warn for very large files (> 100 MB)
+            long fileSize = chosen.length();
+            if (fileSize > 100L * 1024 * 1024) {
+                Alert warn = new Alert(Alert.AlertType.CONFIRMATION);
+                warn.setTitle("Large File Warning");
+                warn.setHeaderText("File is larger than 100 MB");
+                warn.setContentText("Sharing a " + formatFileSize(fileSize) +
+                        " file over LAN may take some time and will temporarily slow down " +
+                        "whiteboard updates.\n\nContinue?");
+                warn.getDialogPane().getStylesheets().add(
+                        getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
+                java.util.Optional<ButtonType> result = warn.showAndWait();
+                if (result.isEmpty() || result.get() != ButtonType.OK) return;
+            }
+
+            sendFileAsync(chosen);
+        });
+
+        Tab tab = new Tab("  \uD83D\uDCC1 Files  ", filePanel);
+        tab.setClosable(false);
+        return tab;
+    }
+
+    /**
+     * Reads the file in 256 KB chunks on a background thread and enqueues
+     * FILE_SHARE_START → FILE_CHUNK × N → FILE_SHARE_COMPLETE messages.
+     *
+     * server.broadcast() calls LinkedBlockingQueue.offer() which is thread-safe,
+     * so calling it from this background thread is safe.
+     *
+     * Platform.runLater() is used for all UI updates (progress bar, status label).
+     */
+    private void sendFileAsync(File file) {
+        String transferId = UUID.randomUUID().toString();
+        String fileName   = file.getName();
+        long   fileSize   = file.length();
+        int    totalChunks = (int) Math.ceil((double) fileSize / CHUNK_SIZE);
+        if (totalChunks == 0) totalChunks = 1; // safety for tiny files
+
+        // ── Build UI row for this transfer ─────────────────────────────────
+        Label nameLbl = new Label(fileName);
+        nameLbl.setMaxWidth(300);
+        nameLbl.setTooltip(new Tooltip(file.getAbsolutePath()));
+
+        Label sizeLbl = new Label(formatFileSize(fileSize));
+        sizeLbl.getStyleClass().add("lbl-section");
+        sizeLbl.setMinWidth(75);
+
+        ProgressBar progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(140);
+
+        Label statusLbl = new Label("Sending...");
+        statusLbl.getStyleClass().add("lbl-subtitle");
+        HBox.setHgrow(statusLbl, Priority.ALWAYS);
+
+        HBox row = new HBox(12, nameLbl, sizeLbl, progressBar, statusLbl);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(8, 12, 8, 12));
+        row.setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
+
+        // Swap out empty-state label on first file
+        if (!fileTabHasItems) {
+            fileTabHasItems = true;
+            fileListBox.getChildren().remove(fileEmptyLabel);
+        }
+        fileListBox.getChildren().add(row);
+
+        // Switch to Files tab so teacher can see progress
+        tabPane.getSelectionModel().select(fileTab);
+
+        // ── Background sender thread ───────────────────────────────────────
+        final int finalTotalChunks = totalChunks;
+        Thread sender = new Thread(() -> {
+            // 1. Broadcast FILE_SHARE_START (metadata)
+            FileShareData startMeta = FileShareData.start(transferId, fileName, fileSize, finalTotalChunks);
+            server.broadcast(new Message(MessageType.FILE_SHARE_START, startMeta, "Teacher"));
+
+            // 2. Read and broadcast chunks
+            byte[] buf = new byte[CHUNK_SIZE];
+            int chunkIndex = 0;
+            boolean errorOccurred = false;
+
+            try (FileInputStream fis = new FileInputStream(file)) {
+                int bytesRead;
+                while ((bytesRead = fis.read(buf)) > 0) {
+                    // Copy only the actual bytes read (last chunk may be smaller)
+                    byte[] chunkBytes = new byte[bytesRead];
+                    System.arraycopy(buf, 0, chunkBytes, 0, bytesRead);
+
+                    FileShareData chunk = FileShareData.chunk(
+                            transferId, fileName, fileSize, finalTotalChunks, chunkIndex, chunkBytes);
+                    server.broadcast(new Message(MessageType.FILE_CHUNK, chunk, "Teacher"));
+
+                    chunkIndex++;
+                    final double progress = (double) chunkIndex / finalTotalChunks;
+                    Platform.runLater(() -> progressBar.setProgress(progress));
+                }
+            } catch (IOException ex) {
+                errorOccurred = true;
+                final String errMsg = ex.getMessage() != null ? ex.getMessage() : "Unknown I/O error";
+                Platform.runLater(() -> {
+                    progressBar.setProgress(0);
+                    statusLbl.setText("\u2717 Error: " + errMsg);
+                    statusLbl.setStyle("-fx-text-fill: #dc2626;");
+                    row.setStyle("-fx-background-color: #fff5f5; -fx-border-radius: 6; -fx-background-radius: 6;");
+                });
+            }
+
+            // 3. Broadcast FILE_SHARE_COMPLETE (even on error so students clean up)
+            FileShareData complete = FileShareData.complete(transferId, fileName, fileSize);
+            server.broadcast(new Message(MessageType.FILE_SHARE_COMPLETE, complete, "Teacher"));
+
+            if (!errorOccurred) {
+                Platform.runLater(() -> {
+                    progressBar.setProgress(1.0);
+                    statusLbl.setText("\u2713 Shared to all students");
+                    statusLbl.setStyle("-fx-text-fill: #059669; -fx-font-weight: bold;");
+                });
+            }
+        }, "file-sender-" + transferId.substring(0, 8));
+        sender.setDaemon(true);
+        sender.start();
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Shared helpers
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** Human-readable file size string. */
+    private static String formatFileSize(long bytes) {
+        if (bytes < 1024L)                return bytes + " B";
+        if (bytes < 1024L * 1024)         return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024)  return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
     }
 
     private ToggleButton shapeTool(String text, ToggleGroup group) {
@@ -613,6 +823,17 @@ public class TeacherUI {
         prevSlideBtn.setDisable(idx <= 0);
         nextSlideBtn.setDisable(idx >= total - 1);
         slideCountLabel.setText((idx + 1) + " / " + total);
+    }
+
+    /** Shows a themed alert dialog. Must be called on the FX thread. */
+    private void showAlert(Alert.AlertType type, String title, String header, String content) {
+        Alert alert = new Alert(type);
+        alert.setTitle(title);
+        alert.setHeaderText(header);
+        alert.setContentText(content);
+        alert.getDialogPane().getStylesheets().add(
+                getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
+        alert.showAndWait();
     }
 
     public void refreshStudentList() {

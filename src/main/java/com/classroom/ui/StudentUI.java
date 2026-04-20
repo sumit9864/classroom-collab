@@ -2,6 +2,7 @@ package com.classroom.ui;
 
 import com.classroom.client.StudentClient;
 import com.classroom.model.CodeData;
+import com.classroom.model.FileShareData;
 import com.classroom.model.Message;
 import com.classroom.model.ShapeData;
 import com.classroom.model.SlideData;
@@ -15,9 +16,17 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
+import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.HashMap;
+import java.util.Map;
 import javafx.animation.PauseTransition;
 import javafx.util.Duration;
 
@@ -49,15 +58,16 @@ public class StudentUI {
             "-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-border-width: 0;";
     private static final String CODE_AREA_LIGHT   = "-fx-background-color: #fafafa; -fx-border-width: 0;";
 
-    // ── State ──────────────────────────────────────────────────────────────
+    // ── Theme state ────────────────────────────────────────────────────────
     private boolean isDarkTheme = false;
     private Scene   mainScene;
 
-    // ── Dynamic refs ───────────────────────────────────────────────────────
+    // ── Code panel dynamic refs ────────────────────────────────────────────
     private TextArea codeViewer;
     private TextArea lineNumbers;
     private HBox     codeArea;
 
+    // ── Core state ─────────────────────────────────────────────────────────
     private final Stage stage;
     private StudentClient client;
     private final Label statusLabel;
@@ -73,6 +83,40 @@ public class StudentUI {
     // Phase 4
     private Tab codeTab;
 
+    // Phase 5 — File receiving
+    private Tab   fileTab;
+    private VBox  fileListBox;
+    private Label fileEmptyLabel;
+    private boolean fileTabHasItems = false;
+
+    /**
+     * Tracks an in-progress file transfer on the student side.
+     * All fields are accessed only on the FX thread (handleMessage is
+     * dispatched via Platform.runLater in StudentClient).
+     */
+    private static final class FileReceiveEntry {
+        final String fileName;
+        final long   totalBytes;
+        final int    totalChunks;
+        int     receivedChunks = 0;
+        File    tempFile;
+        FileOutputStream fos;
+        ProgressBar progressBar;
+        Label       statusLabel;
+        Button      saveButton;
+        boolean     failed = false;
+
+        FileReceiveEntry(String fileName, long totalBytes, int totalChunks) {
+            this.fileName    = fileName;
+            this.totalBytes  = totalBytes;
+            this.totalChunks = totalChunks;
+        }
+    }
+
+    /** Active transfers keyed by transferId. Accessed only on FX thread. */
+    private final Map<String, FileReceiveEntry> pendingFiles = new HashMap<>();
+
+    // ── Constructor ────────────────────────────────────────────────────────
     public StudentUI(Stage stage, StudentClient client) {
         this.stage = stage;
         this.client = client;
@@ -82,21 +126,23 @@ public class StudentUI {
 
     public void setClient(StudentClient client) { this.client = client; }
 
-    // ── Theme switching ────────────────────────────────────────────────────
+    // ── Theme application ──────────────────────────────────────────────────
     private void applyTheme(boolean dark) {
         isDarkTheme = dark;
         if (mainScene == null) return;
         mainScene.getStylesheets().clear();
-        mainScene.getStylesheets().add(getClass().getResource(dark ? THEME_DARK : THEME_LIGHT).toExternalForm());
-        Color canvas     = dark ? DARK_CANVAS    : LIGHT_CANVAS;
-        String container = dark ? DARK_CONTAINER : LIGHT_CONTAINER;
-        whiteboardPane.setCanvasBgColor(canvas, container);
-        pptWhiteboardPane.setCanvasBgColor(canvas, container);
+        mainScene.getStylesheets().add(
+                getClass().getResource(dark ? THEME_DARK : THEME_LIGHT).toExternalForm());
+        whiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
+                                        dark ? DARK_CONTAINER : LIGHT_CONTAINER);
+        pptWhiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
+                                           dark ? DARK_CONTAINER : LIGHT_CONTAINER);
         if (codeViewer  != null) codeViewer .setStyle(dark ? CODE_VIEWER_DARK : CODE_VIEWER_LIGHT);
         if (lineNumbers != null) lineNumbers.setStyle(dark ? CODE_NUMS_DARK   : CODE_NUMS_LIGHT);
         if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
     }
 
+    // ── show() ─────────────────────────────────────────────────────────────
     public void show() {
 
         // ── THEME TOGGLE ───────────────────────────────────────────────────
@@ -190,7 +236,6 @@ public class StudentUI {
         codeArea.setStyle(CODE_AREA_LIGHT);
         VBox.setVgrow(codeArea, Priority.ALWAYS);
 
-        // Copy button
         Button copyBtn = new Button("\u2398  Copy to Clipboard");
         copyBtn.setStyle("-fx-background-color: #f3f4f6; -fx-text-fill: #374151; " +
                 "-fx-border-color: #d1d5db; -fx-border-width: 1; -fx-background-radius: 5; -fx-border-radius: 5;");
@@ -217,12 +262,14 @@ public class StudentUI {
 
         VBox codeTabContent = new VBox(codeToolbar, codeArea);
         VBox.setVgrow(codeTabContent, Priority.ALWAYS);
-
         codeTab = new Tab("  Code  ", codeTabContent);
         codeTab.setClosable(false);
 
+        // ── TAB 4: FILES ───────────────────────────────────────────────────
+        fileTab = buildFileTab();
+
         // ── TABPANE ────────────────────────────────────────────────────────
-        tabPane = new TabPane(whiteboardTab, pptTab, codeTab);
+        tabPane = new TabPane(whiteboardTab, pptTab, codeTab, fileTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         // ── BOTTOM STATUS BAR ──────────────────────────────────────────────
@@ -233,13 +280,13 @@ public class StudentUI {
         Button zoomOutBtn = new Button("Zoom \u2212");
         zoomInBtn.setOnAction(e -> {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
-            if (sel == codeTab) return;
+            if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
             active.setZoom(active.getZoom() + 0.1);
         });
         zoomOutBtn.setOnAction(e -> {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
-            if (sel == codeTab) return;
+            if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
             active.setZoom(active.getZoom() - 0.1);
         });
@@ -278,7 +325,6 @@ public class StudentUI {
 
         mainScene = new Scene(root, 1000, 640);
         mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
-        // Light canvas (default)
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
@@ -287,14 +333,222 @@ public class StudentUI {
         stage.show();
     }
 
+    // ════════════════════════════════════════════════════════════════════════
+    //  FILE RECEIVING — Tab builder + message handlers
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** Builds the Files tab (empty state — populated as files arrive). */
+    private Tab buildFileTab() {
+        Label headerLbl = new Label("Files from Teacher");
+        headerLbl.getStyleClass().add("lbl-panel-header");
+
+        Label subLbl = new Label("Files shared during this session appear here. Click \"Save File\" to download.");
+        subLbl.getStyleClass().add("lbl-subtitle");
+        HBox.setHgrow(subLbl, Priority.ALWAYS);
+
+        HBox hdr = new HBox(10, headerLbl, subLbl);
+        hdr.setAlignment(Pos.CENTER_LEFT);
+        hdr.getStyleClass().add("ppt-controls");
+
+        fileEmptyLabel = new Label("No files shared yet.\nFiles sent by the teacher will appear here automatically.");
+        fileEmptyLabel.getStyleClass().add("lbl-muted");
+        fileEmptyLabel.setTextAlignment(javafx.scene.text.TextAlignment.CENTER);
+
+        fileListBox = new VBox(6);
+        fileListBox.setPadding(new Insets(10));
+        fileListBox.setAlignment(Pos.TOP_LEFT);
+        fileListBox.getChildren().add(fileEmptyLabel);
+
+        ScrollPane fileScroll = new ScrollPane(fileListBox);
+        fileScroll.setFitToWidth(true);
+        fileScroll.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent;");
+
+        VBox panel = new VBox(hdr, fileScroll);
+        VBox.setVgrow(fileScroll, Priority.ALWAYS);
+
+        Tab tab = new Tab("  \uD83D\uDCC1 Files  ", panel);
+        tab.setClosable(false);
+        return tab;
+    }
+
+    /**
+     * Called when FILE_SHARE_START arrives.
+     * Creates a temp file, opens its FileOutputStream, and adds a UI row.
+     * All I/O errors are caught and surfaced in the UI — no exception propagates.
+     */
+    private void handleFileStart(FileShareData data) {
+        String transferId = data.getTransferId();
+        String fileName   = data.getFileName();
+        long   totalBytes = data.getTotalBytes();
+        int totalChunks   = data.getTotalChunks();
+
+        // Guard: ignore duplicate START for same transferId
+        if (pendingFiles.containsKey(transferId)) return;
+
+        // Build UI row first (always shown, even if temp file creation fails)
+        Label nameLbl = new Label(fileName);
+        nameLbl.setMaxWidth(320);
+        nameLbl.setTooltip(new Tooltip(fileName + " \u2014 " + formatFileSize(totalBytes)));
+
+        Label sizeLbl = new Label(formatFileSize(totalBytes));
+        sizeLbl.getStyleClass().add("lbl-section");
+        sizeLbl.setMinWidth(75);
+
+        ProgressBar progressBar = new ProgressBar(0);
+        progressBar.setPrefWidth(140);
+
+        Label statusLbl = new Label("Receiving...");
+        statusLbl.getStyleClass().add("lbl-subtitle");
+
+        Button saveBtn = new Button("\uD83D\uDCBE  Save File");
+        saveBtn.getStyleClass().add("btn-primary");
+        saveBtn.setVisible(false);
+        saveBtn.setManaged(false);
+
+        HBox row = new HBox(12, nameLbl, sizeLbl, progressBar, statusLbl, saveBtn);
+        row.setAlignment(Pos.CENTER_LEFT);
+        row.setPadding(new Insets(8, 12, 8, 12));
+
+        if (!fileTabHasItems) {
+            fileTabHasItems = true;
+            fileListBox.getChildren().remove(fileEmptyLabel);
+        }
+        fileListBox.getChildren().add(row);
+
+        // Auto-switch to Files tab when a new file arrives
+        tabPane.getSelectionModel().select(fileTab);
+
+        // Create entry
+        FileReceiveEntry entry = new FileReceiveEntry(fileName, totalBytes, totalChunks);
+        entry.progressBar = progressBar;
+        entry.statusLabel = statusLbl;
+        entry.saveButton  = saveBtn;
+
+        // Try to create temp file
+        try {
+            // Use a safe prefix — strip any path separators from fileName
+            String safeBase = fileName.replaceAll("[/\\\\:*?\"<>|]", "_");
+            entry.tempFile = File.createTempFile("cc_recv_", "_" + safeBase);
+            entry.tempFile.deleteOnExit(); // clean up on JVM exit
+            entry.fos = new FileOutputStream(entry.tempFile);
+        } catch (IOException ex) {
+            entry.failed = true;
+            statusLbl.setText("\u2717 Cannot write temp file: " + ex.getMessage());
+            statusLbl.setStyle("-fx-text-fill: #dc2626;");
+        }
+
+        pendingFiles.put(transferId, entry);
+
+        // Wire save button (captured variables are effectively final via entry reference)
+        saveBtn.setOnAction(e -> saveFile(entry, fileName));
+    }
+
+    /**
+     * Called when FILE_CHUNK arrives.
+     * Writes the chunk bytes to the temp file. On error, marks entry as failed.
+     * Called on the FX thread — FileOutputStream writes are fast for 256 KB chunks
+     * on modern hardware and do not cause noticeable jank on LAN.
+     */
+    private void handleFileChunk(FileShareData data) {
+        FileReceiveEntry entry = pendingFiles.get(data.getTransferId());
+        if (entry == null || entry.failed) return; // no START received or already failed
+
+        byte[] chunkData = data.getChunkData();
+        if (chunkData == null || chunkData.length == 0) return; // malformed chunk, skip
+
+        try {
+            entry.fos.write(chunkData);
+            entry.receivedChunks++;
+            int total = data.getTotalChunks() > 0 ? data.getTotalChunks() : entry.totalChunks;
+            double progress = total > 0 ? (double) entry.receivedChunks / total : 0;
+            entry.progressBar.setProgress(Math.min(progress, 1.0));
+        } catch (IOException ex) {
+            entry.failed = true;
+            entry.statusLabel.setText("\u2717 Write error: " + ex.getMessage());
+            entry.statusLabel.setStyle("-fx-text-fill: #dc2626;");
+            closeFos(entry);
+        }
+    }
+
+    /**
+     * Called when FILE_SHARE_COMPLETE arrives.
+     * Closes the FileOutputStream and either shows the Save button or an error label.
+     */
+    private void handleFileComplete(FileShareData data) {
+        FileReceiveEntry entry = pendingFiles.remove(data.getTransferId());
+        if (entry == null) return; // no matching START — ignore
+
+        closeFos(entry); // safe to call even if already closed
+
+        if (entry.failed) {
+            entry.progressBar.setProgress(0);
+            // statusLabel already set by handleFileChunk's error handler
+            return;
+        }
+
+        entry.progressBar.setProgress(1.0);
+        entry.statusLabel.setText("\u2713 Ready to save");
+        entry.statusLabel.setStyle("-fx-text-fill: #059669; -fx-font-weight: bold;");
+        entry.saveButton.setVisible(true);
+        entry.saveButton.setManaged(true);
+    }
+
+    /**
+     * Opens a Save dialog and copies the temp file to the chosen destination.
+     * Handles all I/O errors with an alert so no exception propagates to the FX thread.
+     */
+    private void saveFile(FileReceiveEntry entry, String originalFileName) {
+        if (entry.tempFile == null || !entry.tempFile.exists()) {
+            showAlert(Alert.AlertType.ERROR, "Save Failed",
+                    "Temp file not found",
+                    "The temporary download file is missing. The transfer may have failed.");
+            return;
+        }
+
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Save File As");
+        fc.setInitialFileName(originalFileName);
+
+        // Offer the file's own extension as the first filter so the OS pre-selects it
+        String ext = getExtension(originalFileName);
+        if (!ext.isEmpty()) {
+            fc.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter(ext.toUpperCase() + " File", "*." + ext));
+        }
+        fc.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("All Files", "*.*"));
+
+        File dest = fc.showSaveDialog(stage);
+        if (dest == null) return; // user cancelled
+
+        try {
+            Files.copy(entry.tempFile.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            entry.saveButton.setText("\u2713  Saved");
+            entry.saveButton.setDisable(true);
+            entry.statusLabel.setText("\u2713 Saved to: " + dest.getName());
+        } catch (IOException ex) {
+            showAlert(Alert.AlertType.ERROR, "Save Failed",
+                    "Could not save the file",
+                    "Error: " + ex.getMessage() + "\n\nCheck that you have write permission to that location.");
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Message dispatcher (called on FX thread via Platform.runLater)
+    // ════════════════════════════════════════════════════════════════════════
+
     public void handleMessage(Message msg) {
         boolean isPpt = "Teacher_PPT".equals(msg.getSenderName());
         WhiteboardPane targetPane = isPpt ? pptWhiteboardPane : whiteboardPane;
 
         switch (msg.getType()) {
+
+            // ── Session control ────────────────────────────────────────────
             case STUDENT_LIST_UPDATE:
-                System.out.println("[StudentUI] Student list updated: " + msg.getPayload()); break;
-            case HEARTBEAT: break;
+                System.out.println("[StudentUI] Student list updated: " + msg.getPayload());
+                break;
+            case HEARTBEAT:
+                break; // keep-alive — no action needed
             case DISCONNECT:
                 Alert alert = new Alert(Alert.AlertType.INFORMATION);
                 alert.setTitle("Session Ended");
@@ -303,7 +557,10 @@ public class StudentUI {
                 alert.getDialogPane().getStylesheets().add(
                         getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
                 alert.showAndWait();
-                stage.close(); break;
+                stage.close();
+                break;
+
+            // ── Whiteboard & annotation ────────────────────────────────────
             case STROKE_PROGRESS:
                 if (targetPane != null) targetPane.applyStrokeProgress((StrokeData) msg.getPayload()); break;
             case WHITEBOARD_STROKE:
@@ -319,7 +576,11 @@ public class StudentUI {
             case REDO:
                 if (targetPane != null) targetPane.redo(); break;
             case CANVAS_RESIZE:
-                if (targetPane != null) { double[] size = (double[]) msg.getPayload(); targetPane.setCanvasSize(size[0], size[1]); } break;
+                if (targetPane != null) {
+                    double[] size = (double[]) msg.getPayload();
+                    targetPane.setCanvasSize(size[0], size[1]);
+                }
+                break;
             case SHAPE_ADD:
                 if (targetPane != null) targetPane.addShape((ShapeData) msg.getPayload()); break;
             case SHAPE_UPDATE:
@@ -328,6 +589,8 @@ public class StudentUI {
                 if (targetPane != null) targetPane.removeShape((String) msg.getPayload()); break;
             case FULL_STATE:
                 if (targetPane != null) targetPane.applyFullState((FullState) msg.getPayload()); break;
+
+            // ── PPT Sharing ────────────────────────────────────────────────
             case PPT_SLIDE:
                 SlideData sd = (SlideData) msg.getPayload();
                 Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
@@ -337,13 +600,69 @@ public class StudentUI {
                     javafx.scene.Group overlayGroup = new javafx.scene.Group(pptWhiteboardPane);
                     pptSlidePanel.getChildren().addAll(pptImageView, overlayGroup);
                 }
-                tabPane.getSelectionModel().select(pptTab); break;
+                tabPane.getSelectionModel().select(pptTab);
+                break;
+
+            // ── Code Sharing ───────────────────────────────────────────────
             case CODE_SHARE:
                 CodeData cd = (CodeData) msg.getPayload();
                 codeViewer.setText(cd.getCode());
-                if (!cd.getCode().isBlank()) tabPane.getSelectionModel().select(codeTab); break;
+                if (!cd.getCode().isBlank()) tabPane.getSelectionModel().select(codeTab);
+                break;
+
+            // ── File Sharing (Phase 5) ─────────────────────────────────────
+            case FILE_SHARE_START:
+                handleFileStart((FileShareData) msg.getPayload());
+                break;
+            case FILE_CHUNK:
+                handleFileChunk((FileShareData) msg.getPayload());
+                break;
+            case FILE_SHARE_COMPLETE:
+                handleFileComplete((FileShareData) msg.getPayload());
+                break;
+
             default:
-                System.out.println("[StudentUI] Unhandled message: " + msg.getType()); break;
+                System.out.println("[StudentUI] Unhandled message: " + msg.getType());
+                break;
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  Shared helpers
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** Safely closes the FileOutputStream for the given entry (idempotent). */
+    private static void closeFos(FileReceiveEntry entry) {
+        if (entry.fos != null) {
+            try { entry.fos.close(); } catch (IOException ex) { /* ignore */ }
+            entry.fos = null;
+        }
+    }
+
+    /** Returns the lowercase extension of a filename, or "" if none. */
+    private static String getExtension(String fileName) {
+        if (fileName == null) return "";
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 0 || dot == fileName.length() - 1) return "";
+        return fileName.substring(dot + 1).toLowerCase();
+    }
+
+    /** Human-readable file size string. */
+    private static String formatFileSize(long bytes) {
+        if (bytes < 1024L)                return bytes + " B";
+        if (bytes < 1024L * 1024)         return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024L * 1024 * 1024)  return String.format("%.1f MB", bytes / (1024.0 * 1024));
+        return String.format("%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    /** Shows a themed alert. Must be called on the FX thread. */
+    private void showAlert(Alert.AlertType type, String title, String header, String content) {
+        Alert a = new Alert(type);
+        a.setTitle(title);
+        a.setHeaderText(header);
+        a.setContentText(content);
+        a.getDialogPane().getStylesheets().add(
+                getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
+        a.showAndWait();
     }
 }

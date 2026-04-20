@@ -25,5 +25,10 @@ public enum MessageType {
     PPT_SLIDE,           // Teacher → All Students: SlideData payload (PNG bytes + index + total)
 
     // Phase 4 — Code Sharing
-    CODE_SHARE           // Teacher → All Students (and late-join sync): CodeData payload
+    CODE_SHARE,          // Teacher → All Students (and late-join sync): CodeData payload
+
+    // Phase 5 — File Sharing
+    FILE_SHARE_START,    // Teacher → All Students: FileShareData metadata (fileName, size, totalChunks)
+    FILE_CHUNK,          // Teacher → All Students: FileShareData with one chunk of file bytes
+    FILE_SHARE_COMPLETE  // Teacher → All Students: FileShareData signals transfer finished
 }
