@@ -25,6 +25,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import javafx.animation.PauseTransition;
@@ -645,32 +646,41 @@ public class TeacherUI {
             }
 
             FileChooser fc = new FileChooser();
-            fc.setTitle("Choose a file to share with all students");
+            fc.setTitle("Choose one or more files to share with all students");
             fc.getExtensionFilters().add(
                     new FileChooser.ExtensionFilter("All Files", "*.*"));
-            File chosen = fc.showOpenDialog(stage);
-            if (chosen == null) return; // user cancelled
+            List<File> chosen = fc.showOpenMultipleDialog(stage);
+            if (chosen == null || chosen.isEmpty()) return; // user cancelled
 
-            // Validate the chosen file
-            if (!chosen.exists() || !chosen.isFile()) {
-                showAlert(Alert.AlertType.ERROR, "Invalid File",
-                        "Cannot read file", "The selected file does not exist or is not accessible.");
-                return;
+            // Validate every selected file; collect valid ones and report skipped ones
+            List<File> valid    = new ArrayList<>();
+            List<String> skipped = new ArrayList<>();
+            for (File f : chosen) {
+                if (!f.exists() || !f.isFile()) {
+                    skipped.add(f.getName() + " \u2014 does not exist or is not accessible");
+                } else if (f.length() == 0) {
+                    skipped.add(f.getName() + " \u2014 file is empty");
+                } else {
+                    valid.add(f);
+                }
             }
-            if (chosen.length() == 0) {
-                showAlert(Alert.AlertType.ERROR, "Empty File",
-                        "File is empty", "Cannot share an empty file.");
-                return;
+            if (!skipped.isEmpty()) {
+                showAlert(Alert.AlertType.WARNING,
+                        "Some Files Skipped",
+                        skipped.size() + " file(s) could not be shared",
+                        String.join("\n", skipped));
             }
+            if (valid.isEmpty()) return;
 
-            // Warn for very large files (> 100 MB)
-            long fileSize = chosen.length();
-            if (fileSize > 100L * 1024 * 1024) {
+            // Single aggregate large-transfer warning (> 100 MB total)
+            long totalSize = 0L;
+            for (File f : valid) totalSize += f.length();
+            if (totalSize > 100L * 1024 * 1024) {
                 Alert warn = new Alert(Alert.AlertType.CONFIRMATION);
-                warn.setTitle("Large File Warning");
-                warn.setHeaderText("File is larger than 100 MB");
-                warn.setContentText("Sharing a " + formatFileSize(fileSize) +
-                        " file over LAN may take some time and will temporarily slow down " +
+                warn.setTitle("Large Transfer Warning");
+                warn.setHeaderText(valid.size() + " file(s) \u2014 total " + formatFileSize(totalSize));
+                warn.setContentText("Sharing " + formatFileSize(totalSize) +
+                        " over LAN may take some time and will temporarily slow down " +
                         "whiteboard updates.\n\nContinue?");
                 warn.getDialogPane().getStylesheets().add(
                         getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
@@ -678,7 +688,12 @@ public class TeacherUI {
                 if (result.isEmpty() || result.get() != ButtonType.OK) return;
             }
 
-            sendFileAsync(chosen);
+            // Launch one independent background thread per valid file.
+            // Each sendFileAsync() call is self-contained — parallel sends are safe
+            // because every transfer has a unique transferId and its own progress row.
+            for (File f : valid) {
+                sendFileAsync(f);
+            }
         });
 
         Tab tab = new Tab("  \uD83D\uDCC1 Files  ", filePanel);
