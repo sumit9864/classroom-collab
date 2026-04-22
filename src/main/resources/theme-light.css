@@ -176,7 +176,7 @@
     -fx-faint-focus-color: transparent;
 }
 .list-view .placeholder .label { -fx-text-fill: #9ca3af; -fx-font-style: italic; -fx-font-size: 12px; }
-.list-cell           { -fx-background-color: transparent; -fx-text-fill: #111827; -fx-padding: 8px 10px; -fx-background-radius: 5px; }
+.list-cell           { -fx-background-color: transparent; -fx-text-fill: #111827; -fx-padding: 4px 10px; -fx-background-radius: 5px; }
 .list-cell:odd       { -fx-background-color: transparent; }
 .list-cell:hover     { -fx-background-color: #f3f4f6; }
 .list-cell:selected  { -fx-background-color: #dbeafe; -fx-text-fill: #2563eb; }

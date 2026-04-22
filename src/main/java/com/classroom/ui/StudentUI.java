@@ -25,8 +25,12 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import javafx.animation.PauseTransition;
 import javafx.util.Duration;
 
@@ -84,10 +88,14 @@ public class StudentUI {
     private Tab codeTab;
 
     // Phase 5 — File receiving
-    private Tab   fileTab;
-    private VBox  fileListBox;
-    private Label fileEmptyLabel;
+    private Tab    fileTab;
+    private VBox   fileListBox;
+    private Label  fileEmptyLabel;
+    private Button downloadAllBtn;          // enabled once ≥1 file is complete
     private boolean fileTabHasItems = false;
+
+    /** Completed, ready-to-save transfers (used for the Download All as ZIP feature). */
+    private final List<FileReceiveEntry> completedFiles = new ArrayList<>();
 
     /**
      * Tracks an in-progress file transfer on the student side.
@@ -95,8 +103,7 @@ public class StudentUI {
      * dispatched via Platform.runLater in StudentClient).
      */
     private static final class FileReceiveEntry {
-        final String fileName;
-        final long   totalBytes;
+        final String fileName;       // original name — used by ZIP feature
         final int    totalChunks;
         int     receivedChunks = 0;
         File    tempFile;
@@ -106,9 +113,8 @@ public class StudentUI {
         Button      saveButton;
         boolean     failed = false;
 
-        FileReceiveEntry(String fileName, long totalBytes, int totalChunks) {
+        FileReceiveEntry(String fileName, int totalChunks) {
             this.fileName    = fileName;
-            this.totalBytes  = totalBytes;
             this.totalChunks = totalChunks;
         }
     }
@@ -342,11 +348,16 @@ public class StudentUI {
         Label headerLbl = new Label("Files from Teacher");
         headerLbl.getStyleClass().add("lbl-panel-header");
 
-        Label subLbl = new Label("Files shared during this session appear here. Click \"Save File\" to download.");
+        Label subLbl = new Label("Files shared during this session appear here.");
         subLbl.getStyleClass().add("lbl-subtitle");
         HBox.setHgrow(subLbl, Priority.ALWAYS);
 
-        HBox hdr = new HBox(10, headerLbl, subLbl);
+        downloadAllBtn = new Button("\u2B07  Download All as ZIP");
+        downloadAllBtn.getStyleClass().add("btn-primary");
+        downloadAllBtn.setDisable(true);
+        downloadAllBtn.setOnAction(e -> downloadAllAsZip());
+
+        HBox hdr = new HBox(10, headerLbl, subLbl, downloadAllBtn);
         hdr.setAlignment(Pos.CENTER_LEFT);
         hdr.getStyleClass().add("ppt-controls");
 
@@ -419,7 +430,7 @@ public class StudentUI {
         tabPane.getSelectionModel().select(fileTab);
 
         // Create entry
-        FileReceiveEntry entry = new FileReceiveEntry(fileName, totalBytes, totalChunks);
+        FileReceiveEntry entry = new FileReceiveEntry(fileName, totalChunks);
         entry.progressBar = progressBar;
         entry.statusLabel = statusLbl;
         entry.saveButton  = saveBtn;
@@ -491,6 +502,75 @@ public class StudentUI {
         entry.statusLabel.setStyle("-fx-text-fill: #059669; -fx-font-weight: bold;");
         entry.saveButton.setVisible(true);
         entry.saveButton.setManaged(true);
+
+        // Register in completed list and enable the Download All button
+        completedFiles.add(entry);
+        if (downloadAllBtn != null) downloadAllBtn.setDisable(false);
+    }
+
+    /**
+     * Zips all successfully received files into a single archive chosen by the user.
+     * Runs on the FX thread — file I/O is fast for session-sized batches.
+     * Duplicate file names are disambiguated with a numeric suffix.
+     */
+    private void downloadAllAsZip() {
+        // Filter to entries that still have their temp file on disk
+        List<FileReceiveEntry> ready = new ArrayList<>();
+        for (FileReceiveEntry e : completedFiles) {
+            if (!e.failed && e.tempFile != null && e.tempFile.exists()) ready.add(e);
+        }
+        if (ready.isEmpty()) {
+            showAlert(Alert.AlertType.INFORMATION, "Nothing to Download",
+                    "No completed files available",
+                    "All temp files may have been cleaned up. Try saving files individually.");
+            return;
+        }
+
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Save All Files as ZIP");
+        fc.setInitialFileName("classroom_files.zip");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("ZIP Archive", "*.zip"));
+        File dest = fc.showSaveDialog(stage);
+        if (dest == null) return; // user cancelled
+
+        // Ensure the file ends with .zip
+        if (!dest.getName().toLowerCase().endsWith(".zip")) {
+            dest = new File(dest.getParentFile(), dest.getName() + ".zip");
+        }
+
+        // Track used names within the ZIP to handle duplicates
+        Map<String, Integer> nameCount = new HashMap<>();
+        int failures = 0;
+
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(dest))) {
+            for (FileReceiveEntry entry : ready) {
+                String name = entry.fileName;
+                // Disambiguate duplicate names: "file.txt" → "file (2).txt"
+                int count = nameCount.getOrDefault(name, 0) + 1;
+                nameCount.put(name, count);
+                if (count > 1) {
+                    String ext = getExtension(name);
+                    String base = ext.isEmpty() ? name : name.substring(0, name.length() - ext.length() - 1);
+                    name = base + " (" + count + ")" + (ext.isEmpty() ? "" : "." + ext);
+                }
+                try {
+                    zos.putNextEntry(new ZipEntry(name));
+                    Files.copy(entry.tempFile.toPath(), zos);
+                    zos.closeEntry();
+                } catch (IOException ex) {
+                    failures++;
+                }
+            }
+        } catch (IOException ex) {
+            showAlert(Alert.AlertType.ERROR, "ZIP Failed",
+                    "Could not create ZIP file",
+                    "Error: " + ex.getMessage());
+            return;
+        }
+
+        String msg = ready.size() + " file(s) saved to: " + dest.getName();
+        if (failures > 0) msg += "\n(" + failures + " file(s) could not be added)";
+        showAlert(Alert.AlertType.INFORMATION, "Download Complete", "ZIP archive saved", msg);
     }
 
     /**

@@ -192,10 +192,10 @@ public class TeacherUI {
         studentCountLabel = new Label("0 students");
         studentCountLabel.getStyleClass().add("lbl-count");
 
-        HBox studentHeaderRow = new HBox(8, listHeader, studentCountLabel);
-        studentHeaderRow.setAlignment(Pos.CENTER_LEFT);
+        VBox studentHeaderBox = new VBox(2, listHeader, studentCountLabel);
+        studentHeaderBox.setAlignment(Pos.CENTER_LEFT);
 
-        VBox leftPanel = new VBox(10, studentHeaderRow, studentListView);
+        VBox leftPanel = new VBox(10, studentHeaderBox, studentListView);
         leftPanel.getStyleClass().add("left-panel");
         VBox.setVgrow(studentListView, Priority.ALWAYS);
 

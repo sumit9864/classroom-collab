@@ -196,7 +196,7 @@ public class WhiteboardPane extends StackPane {
             if (cw == 0 || ch == 0) return;
             currentPoints.clear();
             double px = e.getX(), py = e.getY();
-            currentPoints.add(new double[]{px / cw, py / ch});
+            currentPoints.add(new double[]{px, py});   // absolute pixels
             lastX = px; lastY = py;
             GraphicsContext gc = activeGc();
             if (drawMode == DrawMode.ERASER) {
@@ -221,10 +221,9 @@ public class WhiteboardPane extends StackPane {
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             double px = e.getX(), py = e.getY();
-            currentPoints.add(new double[]{px / cw, py / ch});
+            currentPoints.add(new double[]{px, py});   // absolute pixels
             GraphicsContext gc = activeGc();
             if (drawMode == DrawMode.ERASER && annotationMode) {
-                // To avoid dots, we fill the gap between lastX,lastY and px,py
                 double steps = Math.max(Math.abs(px - lastX), Math.abs(py - lastY));
                 for(int i=1; i<=steps; i++) {
                     double stepX = lastX + (px - lastX) * (i / steps);
@@ -243,7 +242,7 @@ public class WhiteboardPane extends StackPane {
                     StrokeData progressStroke = new StrokeData(
                         new ArrayList<>(currentPoints),
                         drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
-                        strokeWidth,
+                        strokeWidth,   // absolute pixels — canvas size is sync'd network-wide
                         annotationMode
                     );
                     onStrokeProgress.accept(progressStroke);
@@ -253,8 +252,11 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMouseReleased(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || currentPoints.isEmpty()) return;
+            // Stroke width stored as absolute pixels; canvas size is always in sync
+            // across the network via CANVAS_RESIZE, so absolute coords are safe.
             StrokeData stroke = new StrokeData(new ArrayList<>(currentPoints),
-                    drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor), strokeWidth, annotationMode);
+                    drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
+                    strokeWidth, annotationMode);
             recordStroke(stroke);
             if (onStrokeDrawn != null) onStrokeDrawn.accept(stroke);
             currentPoints.clear();
@@ -945,24 +947,22 @@ public class WhiteboardPane extends StackPane {
     private void drawOnGc(GraphicsContext gc, StrokeData stroke) {
         List<double[]> pts = stroke.getPoints();
         if (pts.isEmpty()) return;
-        double cw = getCanvasW(), ch = getCanvasH();
-        if (cw == 0 || ch == 0) return;
+        double sw = stroke.getStrokeWidth();   // absolute pixels — no canvas scaling
         boolean isEraser = "#00000000".equals(stroke.getColorHex());
         if (isEraser) {
-            double sw = stroke.getStrokeWidth();
             for (double[] pt : pts) {
-                gc.clearRect(pt[0] * cw - sw, pt[1] * ch - sw, sw * 2, sw * 2);
+                gc.clearRect(pt[0] - sw, pt[1] - sw, sw * 2, sw * 2);
             }
             return;
         }
         gc.setStroke(Color.web(stroke.getColorHex()));
-        gc.setLineWidth(stroke.getStrokeWidth());
+        gc.setLineWidth(sw);
         gc.setLineCap(StrokeLineCap.ROUND);
         gc.setLineJoin(StrokeLineJoin.ROUND);
         gc.beginPath();
-        gc.moveTo(pts.get(0)[0] * cw, pts.get(0)[1] * ch);
+        gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
         for (int i = 1; i < pts.size(); i++) {
-            gc.lineTo(pts.get(i)[0] * cw, pts.get(i)[1] * ch);
+            gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
         }
         gc.stroke();
     }
@@ -990,21 +990,19 @@ public class WhiteboardPane extends StackPane {
         boolean isEraser = "#00000000".equals(stroke.getColorHex());
         List<double[]> pts = stroke.getPoints();
         if (pts.isEmpty()) return;
-        double cw = getCanvasW(), ch = getCanvasH();
-        if (cw == 0 || ch == 0) return;
+        double sw = stroke.getStrokeWidth();   // absolute pixels — no canvas scaling
 
         if (isEraser && stroke.isAnnotation()) {
-            double sw = stroke.getStrokeWidth();
-            gc.clearRect(pts.get(0)[0] * cw - sw, pts.get(0)[1] * ch - sw, sw * 2, sw * 2);
+            gc.clearRect(pts.get(0)[0] - sw, pts.get(0)[1] - sw, sw * 2, sw * 2);
             for (int i = 1; i < pts.size(); i++) {
-                double lastX = pts.get(i-1)[0] * cw;
-                double lastY = pts.get(i-1)[1] * ch;
-                double px = pts.get(i)[0] * cw;
-                double py = pts.get(i)[1] * ch;
-                double steps = Math.max(Math.abs(px - lastX), Math.abs(py - lastY));
+                double lastXp = pts.get(i-1)[0];
+                double lastYp = pts.get(i-1)[1];
+                double px = pts.get(i)[0];
+                double py = pts.get(i)[1];
+                double steps = Math.max(Math.abs(px - lastXp), Math.abs(py - lastYp));
                 for(int j=1; j<=steps; j++) {
-                    double stepX = lastX + (px - lastX) * (j / steps);
-                    double stepY = lastY + (py - lastY) * (j / steps);
+                    double stepX = lastXp + (px - lastXp) * (j / steps);
+                    double stepY = lastYp + (py - lastYp) * (j / steps);
                     gc.clearRect(stepX - sw, stepY - sw, sw * 2, sw * 2);
                 }
             }
@@ -1013,17 +1011,17 @@ public class WhiteboardPane extends StackPane {
 
         if (isEraser && !stroke.isAnnotation()) {
             gc.setStroke(canvasBgColor);
-            gc.setLineWidth(stroke.getStrokeWidth() * 2);
+            gc.setLineWidth(sw * 2);
         } else {
             gc.setStroke(Color.web(stroke.getColorHex()));
-            gc.setLineWidth(stroke.getStrokeWidth());
+            gc.setLineWidth(sw);
         }
 
         gc.setLineCap(StrokeLineCap.ROUND);
         gc.setLineJoin(StrokeLineJoin.ROUND);
         gc.beginPath();
-        gc.moveTo(pts.get(0)[0] * cw, pts.get(0)[1] * ch);
-        for (int i = 1; i < pts.size(); i++) gc.lineTo(pts.get(i)[0] * cw, pts.get(i)[1] * ch);
+        gc.moveTo(pts.get(0)[0], pts.get(0)[1]);
+        for (int i = 1; i < pts.size(); i++) gc.lineTo(pts.get(i)[0], pts.get(i)[1]);
         gc.stroke();
     }
 
