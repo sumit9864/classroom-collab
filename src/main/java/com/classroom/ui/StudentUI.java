@@ -8,8 +8,10 @@ import com.classroom.model.ShapeData;
 import com.classroom.model.SlideData;
 import com.classroom.model.StrokeData;
 import com.classroom.ui.WhiteboardPane.FullState;
+
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.image.Image;
@@ -17,6 +19,7 @@ import javafx.scene.image.ImageView;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.stage.FileChooser;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 
 import java.io.ByteArrayInputStream;
@@ -329,13 +332,15 @@ public class StudentUI {
             });
         }
 
-        mainScene = new Scene(root, 1000, 640);
+        Rectangle2D screenBounds = Screen.getPrimary().getVisualBounds();
+        mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
         mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
         stage.setScene(mainScene);
-        stage.setTitle("Classroom Collaboration \u2014 Student");
+        stage.setTitle("Classroom Collaboration — Student");
+        stage.setMaximized(true);
         stage.show();
     }
 

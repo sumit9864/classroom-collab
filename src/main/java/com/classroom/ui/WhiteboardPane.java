@@ -351,9 +351,7 @@ public class WhiteboardPane extends StackPane {
                 ln.setStroke(c); ln.setStrokeWidth(strokeWidth);
                 ln.getStrokeDashArray().addAll(6.0, 3.0);
                 Polygon head = new Polygon();
-                head.setFill(Color.TRANSPARENT); head.setStroke(c);
-                head.setStrokeWidth(strokeWidth);
-                head.getStrokeDashArray().addAll(6.0, 3.0);
+                head.setFill(c); head.setStroke(c); head.setStrokeWidth(1);
                 grp.getChildren().addAll(ln, head);
                 previewNode = grp; break;
             }

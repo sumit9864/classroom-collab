@@ -575,13 +575,15 @@ public class TeacherUI {
         stage.setMinWidth(900);
         stage.setMinHeight(540);
 
-        mainScene = new Scene(root, 1100, 640);
+        javafx.geometry.Rectangle2D screenBounds = javafx.stage.Screen.getPrimary().getVisualBounds();
+        mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
         mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
         stage.setScene(mainScene);
-        stage.setTitle("Classroom Collaboration \u2014 Teacher");
+        stage.setTitle("Classroom Collaboration — Teacher");
+        stage.setMaximized(true);
         stage.show();
 
         stage.getScene().addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
