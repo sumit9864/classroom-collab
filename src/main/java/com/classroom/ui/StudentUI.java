@@ -88,7 +88,9 @@ public class StudentUI {
     private WhiteboardPane pptWhiteboardPane;
 
     // Phase 4
-    private Tab codeTab;
+    private Tab        codeTab;
+    private Tab        whiteboardTab;
+    private ScrollPane wbScroller; // kept as field for zoom-to-centre
 
     // Phase 5 — File receiving
     private Tab    fileTab;
@@ -96,6 +98,7 @@ public class StudentUI {
     private Label  fileEmptyLabel;
     private Button downloadAllBtn;          // enabled once ≥1 file is complete
     private boolean fileTabHasItems = false;
+    private int forcedTabIndex = -1;
 
     /** Completed, ready-to-save transfers (used for the Download All as ZIP feature). */
     private final List<FileReceiveEntry> completedFiles = new ArrayList<>();
@@ -151,6 +154,37 @@ public class StudentUI {
         if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
     }
 
+    // ── Zoom preserving viewport centre ──────────────────────────────────────
+    private void zoomPane(WhiteboardPane p, double delta) {
+        if (p == null || wbScroller == null) return;
+        double oldZoom = p.getZoom();
+        javafx.geometry.Bounds vp = wbScroller.getViewportBounds();
+        double vpW = vp.getWidth(),  vpH = vp.getHeight();
+        double cw  = p.getPrefWidth(), ch = p.getPrefHeight();
+        double holderW = Math.max(vpW, cw * oldZoom);
+        double holderH = Math.max(vpH, ch * oldZoom);
+        double scrollX = wbScroller.getHvalue() * Math.max(0, holderW - vpW);
+        double scrollY = wbScroller.getVvalue() * Math.max(0, holderH - vpH);
+        double vcX = scrollX + vpW / 2;
+        double vcY = scrollY + vpH / 2;
+        double canvasLeft = Math.max(0, (holderW - cw * oldZoom) / 2);
+        double canvasTop  = Math.max(0, (holderH - ch * oldZoom) / 2);
+        double focusX = (vcX - canvasLeft) / oldZoom;
+        double focusY = (vcY - canvasTop)  / oldZoom;
+        p.setZoom(p.getZoom() + delta);
+        final double nz = p.getZoom();
+        javafx.application.Platform.runLater(() -> {
+            double newHolderW = Math.max(vpW, cw * nz);
+            double newHolderH = Math.max(vpH, ch * nz);
+            double newCanvasLeft = Math.max(0, (newHolderW - cw * nz) / 2);
+            double newCanvasTop  = Math.max(0, (newHolderH - ch * nz) / 2);
+            double newScrollX = focusX * nz + newCanvasLeft - vpW / 2;
+            double newScrollY = focusY * nz + newCanvasTop  - vpH / 2;
+            wbScroller.setHvalue(Math.max(0, Math.min(1, newScrollX / Math.max(1, newHolderW - vpW))));
+            wbScroller.setVvalue(Math.max(0, Math.min(1, newScrollY / Math.max(1, newHolderH - vpH))));
+        });
+    }
+
     // ── show() ─────────────────────────────────────────────────────────────
     public void show() {
 
@@ -171,7 +205,7 @@ public class StudentUI {
         titleSep.setPadding(new Insets(0, 4, 0, 4));
 
         Label roleLabel = new Label("Student");
-        roleLabel.setStyle("-fx-text-fill: #059669; -fx-font-size: 11px; -fx-font-weight: bold;");
+        roleLabel.getStyleClass().add("role-student");
         HBox.setHgrow(roleLabel, Priority.ALWAYS);
 
         Button disconnectButton = new Button("Disconnect");
@@ -192,9 +226,20 @@ public class StudentUI {
 
         // ── TAB 1: WHITEBOARD ──────────────────────────────────────────────
         javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
-        ScrollPane wbScroller = new ScrollPane(canvasGroup);
+        // Centering holder: always at least as large as the viewport so the
+        // canvas stays centred; grows beyond viewport when zoomed in (scrollbars appear).
+        javafx.scene.layout.StackPane centeredHolder = new javafx.scene.layout.StackPane(canvasGroup);
+        centeredHolder.setAlignment(Pos.CENTER);
+        centeredHolder.getStyleClass().add("canvas-holder");
+        wbScroller = new ScrollPane(centeredHolder);
+        wbScroller.setPannable(false); // prevent drag-to-scroll during freehand drawing
         wbScroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
-        Tab whiteboardTab = new Tab("  Whiteboard  ", wbScroller);
+        // Keep canvas centred whenever the viewport is resized
+        wbScroller.viewportBoundsProperty().addListener((obs, old, b) -> {
+            centeredHolder.setMinWidth(b.getWidth());
+            centeredHolder.setMinHeight(b.getHeight());
+        });
+        whiteboardTab = new Tab("  Whiteboard  ", wbScroller);
         whiteboardTab.setClosable(false);
 
         // ── TAB 2: PPT SLIDE ───────────────────────────────────────────────
@@ -245,23 +290,20 @@ public class StudentUI {
         codeArea.setStyle(CODE_AREA_LIGHT);
         VBox.setVgrow(codeArea, Priority.ALWAYS);
 
-        Button copyBtn = new Button("\u2398  Copy to Clipboard");
-        copyBtn.setStyle("-fx-background-color: #f3f4f6; -fx-text-fill: #374151; " +
-                "-fx-border-color: #d1d5db; -fx-border-width: 1; -fx-background-radius: 5; -fx-border-radius: 5;");
+        Button copyBtn = new Button("⎘  Copy to Clipboard");
+        copyBtn.getStyleClass().add("btn-copy");
 
         PauseTransition copyReset = new PauseTransition(Duration.seconds(2));
         copyReset.setOnFinished(ev -> {
-            copyBtn.setText("\u2398  Copy to Clipboard");
-            copyBtn.setStyle("-fx-background-color: #f3f4f6; -fx-text-fill: #374151; " +
-                    "-fx-border-color: #d1d5db; -fx-border-width: 1; -fx-background-radius: 5; -fx-border-radius: 5;");
+            copyBtn.setText("⎘  Copy to Clipboard");
+            copyBtn.getStyleClass().setAll("button", "btn-copy");
         });
         copyBtn.setOnAction(e -> {
             javafx.scene.input.ClipboardContent clip = new javafx.scene.input.ClipboardContent();
             clip.putString(codeViewer.getText());
             javafx.scene.input.Clipboard.getSystemClipboard().setContent(clip);
-            copyBtn.setText("\u2713  Copied!");
-            copyBtn.setStyle("-fx-background-color: #d1fae5; -fx-text-fill: #065f46; " +
-                    "-fx-border-color: #059669; -fx-border-width: 1; -fx-background-radius: 5; -fx-border-radius: 5;");
+            copyBtn.setText("✓  Copied!");
+            copyBtn.getStyleClass().setAll("button", "btn-copy-success");
             copyReset.playFromStart();
         });
 
@@ -280,6 +322,12 @@ public class StudentUI {
         // ── TABPANE ────────────────────────────────────────────────────────
         tabPane = new TabPane(whiteboardTab, pptTab, codeTab, fileTab);
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        
+        tabPane.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+            if (forcedTabIndex != -1 && tabPane.getSelectionModel().getSelectedIndex() != forcedTabIndex) {
+                javafx.application.Platform.runLater(() -> tabPane.getSelectionModel().select(forcedTabIndex));
+            }
+        });
 
         // ── BOTTOM STATUS BAR ──────────────────────────────────────────────
         Region spacer = new Region();
@@ -291,17 +339,25 @@ public class StudentUI {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
             if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
-            active.setZoom(active.getZoom() + 0.1);
+            if (sel == whiteboardTab) {
+                zoomPane(active, 0.1);
+            } else {
+                active.setZoom(active.getZoom() + 0.1);
+            }
         });
         zoomOutBtn.setOnAction(e -> {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
             if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
-            active.setZoom(active.getZoom() - 0.1);
+            if (sel == whiteboardTab) {
+                zoomPane(active, -0.1);
+            } else {
+                active.setZoom(active.getZoom() - 0.1);
+            }
         });
 
-        Label dotLabel = new Label("\u25cf");
-        dotLabel.setStyle("-fx-text-fill: #059669; -fx-font-size: 10px;");
+        Label dotLabel = new Label("●");
+        dotLabel.getStyleClass().add("text-success");
 
         HBox statusBar = new HBox(8, dotLabel, statusLabel, spacer, zoomInBtn, zoomOutBtn);
         statusBar.setAlignment(Pos.CENTER_LEFT);
@@ -332,13 +388,21 @@ public class StudentUI {
             });
         }
 
-        Rectangle2D screenBounds = Screen.getPrimary().getVisualBounds();
-        mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
-        mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+        mainScene = stage.getScene();
+        if (mainScene != null) {
+            mainScene.setRoot(root);
+            mainScene.getStylesheets().clear();
+            mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+        } else {
+            Rectangle2D screenBounds = Screen.getPrimary().getVisualBounds();
+            mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
+            mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+            stage.setScene(mainScene);
+        }
+
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
-        stage.setScene(mainScene);
         stage.setTitle("Classroom Collaboration — Student");
         stage.setMaximized(true);
         stage.show();
@@ -431,8 +495,6 @@ public class StudentUI {
         }
         fileListBox.getChildren().add(row);
 
-        // Auto-switch to Files tab when a new file arrives
-        tabPane.getSelectionModel().select(fileTab);
 
         // Create entry
         FileReceiveEntry entry = new FileReceiveEntry(fileName, totalChunks);
@@ -450,7 +512,7 @@ public class StudentUI {
         } catch (IOException ex) {
             entry.failed = true;
             statusLbl.setText("\u2717 Cannot write temp file: " + ex.getMessage());
-            statusLbl.setStyle("-fx-text-fill: #dc2626;");
+            statusLbl.getStyleClass().setAll("text-error");
         }
 
         pendingFiles.put(transferId, entry);
@@ -481,7 +543,7 @@ public class StudentUI {
         } catch (IOException ex) {
             entry.failed = true;
             entry.statusLabel.setText("\u2717 Write error: " + ex.getMessage());
-            entry.statusLabel.setStyle("-fx-text-fill: #dc2626;");
+            entry.statusLabel.getStyleClass().setAll("text-error");
             closeFos(entry);
         }
     }
@@ -504,7 +566,7 @@ public class StudentUI {
 
         entry.progressBar.setProgress(1.0);
         entry.statusLabel.setText("\u2713 Ready to save");
-        entry.statusLabel.setStyle("-fx-text-fill: #059669; -fx-font-weight: bold;");
+        entry.statusLabel.getStyleClass().setAll("text-success-bold");
         entry.saveButton.setVisible(true);
         entry.saveButton.setManaged(true);
 
@@ -685,14 +747,13 @@ public class StudentUI {
                     javafx.scene.Group overlayGroup = new javafx.scene.Group(pptWhiteboardPane);
                     pptSlidePanel.getChildren().addAll(pptImageView, overlayGroup);
                 }
-                tabPane.getSelectionModel().select(pptTab);
+
                 break;
 
             // ── Code Sharing ───────────────────────────────────────────────
             case CODE_SHARE:
                 CodeData cd = (CodeData) msg.getPayload();
                 codeViewer.setText(cd.getCode());
-                if (!cd.getCode().isBlank()) tabPane.getSelectionModel().select(codeTab);
                 break;
 
             // ── File Sharing (Phase 5) ─────────────────────────────────────
@@ -704,6 +765,15 @@ public class StudentUI {
                 break;
             case FILE_SHARE_COMPLETE:
                 handleFileComplete((FileShareData) msg.getPayload());
+                break;
+
+            // ── Tab Sync (Phase 6) ─────────────────────────────────────────
+            case TAB_SWITCH:
+                int tabIndex = (Integer) msg.getPayload();
+                forcedTabIndex = tabIndex;
+                if (tabIndex != -1) {
+                    tabPane.getSelectionModel().select(tabIndex);
+                }
                 break;
 
             default:

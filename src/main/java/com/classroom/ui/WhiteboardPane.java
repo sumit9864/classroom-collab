@@ -49,6 +49,10 @@ public class WhiteboardPane extends StackPane {
     private String containerBgStyle   = "#e0e0e0";          // outer pane bg (theme-aware)
     private double strokeWidth     = 2.0;
     private double zoomLevel       = 1.0;
+    // Scale transform with pivot at (0,0) — keeps the Group's bounds non-negative
+    // so the centering StackPane positions the canvas symmetrically (no left/top bias).
+    private final javafx.scene.transform.Scale scaleTransform =
+            new javafx.scene.transform.Scale(1, 1, 0, 0);
     private boolean isTransparentBackground = false;
 
     // ── Unified Action History ────────────────────────────────────────────────
@@ -165,6 +169,8 @@ public class WhiteboardPane extends StackPane {
         setMinSize(800, 500);
         setPrefSize(800, 500);
         setMaxSize(800, 500);
+        // Register the pivot-(0,0) Scale transform once; setZoom() only updates its x/y values.
+        this.getTransforms().add(scaleTransform);
 
         redrawAll();
 
@@ -192,6 +198,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMousePressed(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || !e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from capturing the drag
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             currentPoints.clear();
@@ -218,6 +225,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMouseDragged(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || !e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from panning
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             double px = e.getX(), py = e.getY();
@@ -252,6 +260,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMouseReleased(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || currentPoints.isEmpty()) return;
+            e.consume(); // prevent ScrollPane from capturing the event
             // Stroke width stored as absolute pixels; canvas size is always in sync
             // across the network via CANVAS_RESIZE, so absolute coords are safe.
             StrokeData stroke = new StrokeData(new ArrayList<>(currentPoints),
@@ -268,6 +277,7 @@ public class WhiteboardPane extends StackPane {
     private void setupOverlayHandlers() {
         shapeOverlayPane.setOnMousePressed(e -> {
             if (!e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from capturing the drag
             if (drawMode == DrawMode.SELECT) {
                 clearHandles();
                 selectedShapeId = null;
@@ -297,6 +307,7 @@ public class WhiteboardPane extends StackPane {
         });
         shapeOverlayPane.setOnMouseDragged(e -> {
             if (!e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from panning
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 updatePreview(e.getX(), e.getY());
 
@@ -316,6 +327,7 @@ public class WhiteboardPane extends StackPane {
             }
         });
         shapeOverlayPane.setOnMouseReleased(e -> {
+            e.consume(); // prevent ScrollPane from capturing the event
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 finalizeShape(e.getX(), e.getY());
             }
@@ -884,6 +896,11 @@ public class WhiteboardPane extends StackPane {
         return new FullState(getCanvasW(), getCanvasH(), strokes, shapes);
     }
 
+    /** Read-only view of all currently live shapes on this whiteboard. Used by TeacherUI for PPT export. */
+    public java.util.Map<String, ShapeData> getShapeDataMap() {
+        return java.util.Collections.unmodifiableMap(shapeDataMap);
+    }
+
     /** Replays a FullState snapshot — used only on the student side after receiving FULL_STATE. */
     public void applyFullState(FullState state) {
         clearStrokeProgress();
@@ -1134,8 +1151,8 @@ public class WhiteboardPane extends StackPane {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    private double getCanvasW()                { return whiteboardCanvas.getWidth(); }
-    private double getCanvasH()                { return whiteboardCanvas.getHeight(); }
+    public double getCanvasW()                 { return whiteboardCanvas.getWidth(); }
+    public double getCanvasH()                 { return whiteboardCanvas.getHeight(); }
     private GraphicsContext activeGc()         { return annotationMode ? annGc : wbGc; }
     private static String toHex(Color c) {
         return String.format("#%02X%02X%02X",
@@ -1159,10 +1176,16 @@ public class WhiteboardPane extends StackPane {
 
     public double getZoom() { return zoomLevel; }
     public void setZoom(double level) {
-        if (level < 0.2) level = 0.2;
-        if (level > 5.0) level = 5.0;
+        // Round to 1 decimal place to prevent floating-point drift (e.g. 0.999... or 0.7001...)
+        level = Math.round(level * 10.0) / 10.0;
+        if (level < 0.5) level = 0.5;
+        if (level > 3.0) level = 3.0;
         this.zoomLevel = level;
-        this.setScaleX(level); this.setScaleY(level);
+        // Use the pivot-(0,0) Scale transform instead of setScaleX/Y.
+        // setScaleX/Y pivots from node centre, pushing visual bounds into negative
+        // coordinates in the parent Group and breaking the centering StackPane layout.
+        scaleTransform.setX(level);
+        scaleTransform.setY(level);
     }
     
     public void setTransparentBackground(boolean transparent) {

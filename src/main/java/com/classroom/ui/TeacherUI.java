@@ -4,7 +4,9 @@ import com.classroom.model.CodeData;
 import com.classroom.model.FileShareData;
 import com.classroom.model.Message;
 import com.classroom.model.MessageType;
+import com.classroom.model.ShapeData;
 import com.classroom.model.SlideData;
+import com.classroom.model.StrokeData;
 import com.classroom.server.TeacherServer;
 import com.classroom.ui.WhiteboardPane.DrawMode;
 import com.classroom.util.PptService;
@@ -26,8 +28,11 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import javafx.animation.PauseTransition;
 import javafx.util.Duration;
 
@@ -96,6 +101,19 @@ public class TeacherUI {
     private Tab     codeTab;
     private Tab     fileTab;
     private Label   studentCountLabel;
+    private ScrollPane wbScroller; // kept as field for zoom-to-centre
+
+    // ── Per-slide markings store (PPT export) ─────────────────────────────────
+    private final Map<Integer, SavedSlideMarkings> slideMarkingsMap = new HashMap<>();
+
+    private static class SavedSlideMarkings {
+        final List<StrokeData> strokes;
+        final List<ShapeData>  shapes;
+        SavedSlideMarkings(List<StrokeData> strokes, List<ShapeData> shapes) {
+            this.strokes = strokes;
+            this.shapes  = shapes;
+        }
+    }
 
     // Phase 5 — File sharing UI refs
     private VBox  fileListBox;       // holds one HBox per file transfer
@@ -142,6 +160,62 @@ public class TeacherUI {
         if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
     }
 
+    // ── Zoom preserving viewport centre ──────────────────────────────────────
+    /**
+     * Zooms the given whiteboard pane by {@code delta} (+0.1 or -0.1), keeping
+     * the current viewport centre fixed in canvas coordinates.
+     * Formula: record the canvas-natural-pixel at the viewport centre before zoom,
+     * then recompute the scroll position that maps that pixel back to the viewport
+     * centre after zoom.
+     */
+    private void zoomPane(WhiteboardPane p, double delta) {
+        if (p == null || wbScroller == null) return;
+        double oldZoom = p.getZoom();
+
+        // Snapshot viewport geometry before zoom
+        javafx.geometry.Bounds vp = wbScroller.getViewportBounds();
+        double vpW = vp.getWidth(),  vpH = vp.getHeight();
+        double cw  = p.getPrefWidth(), ch = p.getPrefHeight();
+
+        // Current holder size (canvas centered inside; holder >= viewport)
+        double holderW = Math.max(vpW, cw * oldZoom);
+        double holderH = Math.max(vpH, ch * oldZoom);
+
+        // Viewport top-left in holder space
+        double scrollX = wbScroller.getHvalue() * Math.max(0, holderW - vpW);
+        double scrollY = wbScroller.getVvalue() * Math.max(0, holderH - vpH);
+
+        // Viewport centre in holder space
+        double vcX = scrollX + vpW / 2;
+        double vcY = scrollY + vpH / 2;
+
+        // Canvas top-left in holder space (canvas is centred in holder)
+        double canvasLeft = Math.max(0, (holderW - cw * oldZoom) / 2);
+        double canvasTop  = Math.max(0, (holderH - ch * oldZoom) / 2);
+
+        // Viewport centre in natural (unscaled) canvas coordinates
+        double focusX = (vcX - canvasLeft) / oldZoom;
+        double focusY = (vcY - canvasTop)  / oldZoom;
+
+        // Apply zoom (clamped inside setZoom)
+        p.setZoom(p.getZoom() + delta);
+        final double nz = p.getZoom(); // actual zoom after clamping
+
+        // After JavaFX layout pass: restore viewport so focusX/Y stays at centre
+        javafx.application.Platform.runLater(() -> {
+            double newHolderW = Math.max(vpW, cw * nz);
+            double newHolderH = Math.max(vpH, ch * nz);
+            double newCanvasLeft = Math.max(0, (newHolderW - cw * nz) / 2);
+            double newCanvasTop  = Math.max(0, (newHolderH - ch * nz) / 2);
+            double newScrollX = focusX * nz + newCanvasLeft - vpW / 2;
+            double newScrollY = focusY * nz + newCanvasTop  - vpH / 2;
+            double maxSX = Math.max(1, newHolderW - vpW);
+            double maxSY = Math.max(1, newHolderH - vpH);
+            wbScroller.setHvalue(Math.max(0, Math.min(1, newScrollX / maxSX)));
+            wbScroller.setVvalue(Math.max(0, Math.min(1, newScrollY / maxSY)));
+        });
+    }
+
     // ── show() ─────────────────────────────────────────────────────────────
     public void show() {
 
@@ -162,7 +236,7 @@ public class TeacherUI {
         titleSep.setPadding(new Insets(0, 4, 0, 4));
 
         Label roleLabel = new Label("Teacher");
-        roleLabel.setStyle("-fx-text-fill: #2563eb; -fx-font-size: 11px; -fx-font-weight: bold;");
+        roleLabel.getStyleClass().add("role-teacher");
 
         String localIp;
         try { localIp = InetAddress.getLocalHost().getHostAddress(); }
@@ -181,7 +255,25 @@ public class TeacherUI {
             stage.close();
         });
 
-        HBox topBar = new HBox(10, titleLabel, titleSep, roleLabel, ipLabel, themeBtn, stopButton);
+        ToggleButton syncTabsBtn = new ToggleButton("🔓 Lock Tabs");
+        syncTabsBtn.getStyleClass().add("btn-sync");
+        syncTabsBtn.setPrefWidth(130);
+        syncTabsBtn.setAlignment(Pos.CENTER);
+        syncTabsBtn.setOnAction(e -> {
+            if (syncTabsBtn.isSelected()) {
+                syncTabsBtn.setText("🔒 Unlock Tabs");
+                if (server != null) {
+                    server.broadcast(new Message(MessageType.TAB_SWITCH, tabPane.getSelectionModel().getSelectedIndex(), "Teacher"));
+                }
+            } else {
+                syncTabsBtn.setText("🔓 Lock Tabs");
+                if (server != null) {
+                    server.broadcast(new Message(MessageType.TAB_SWITCH, -1, "Teacher")); // -1 to unlock
+                }
+            }
+        });
+
+        HBox topBar = new HBox(10, titleLabel, titleSep, roleLabel, ipLabel, themeBtn, syncTabsBtn, stopButton);
         topBar.setAlignment(Pos.CENTER_LEFT);
         topBar.getStyleClass().add("top-bar");
 
@@ -319,8 +411,24 @@ public class TeacherUI {
         });
         Button zoomInBtn  = new Button("Zoom +");
         Button zoomOutBtn = new Button("Zoom \u2212");
-        zoomInBtn.setOnAction(e -> { WhiteboardPane p = getActivePane(); if (p != null) p.setZoom(p.getZoom() + 0.1); });
-        zoomOutBtn.setOnAction(e -> { WhiteboardPane p = getActivePane(); if (p != null) p.setZoom(p.getZoom() - 0.1); });
+        zoomInBtn.setOnAction(e -> {
+            WhiteboardPane p = getActivePane();
+            if (p == null) return;
+            if (tabPane.getSelectionModel().getSelectedItem() == whiteboardTab) {
+                zoomPane(p, 0.1);
+            } else {
+                p.setZoom(p.getZoom() + 0.1);
+            }
+        });
+        zoomOutBtn.setOnAction(e -> {
+            WhiteboardPane p = getActivePane();
+            if (p == null) return;
+            if (tabPane.getSelectionModel().getSelectedItem() == whiteboardTab) {
+                zoomPane(p, -0.1);
+            } else {
+                p.setZoom(p.getZoom() - 0.1);
+            }
+        });
 
         Label sizeLbl  = new Label("Canvas:"); sizeLbl.getStyleClass().add("lbl-section");
         Label colorLbl = new Label("Color:");  colorLbl.getStyleClass().add("lbl-section");
@@ -388,8 +496,18 @@ public class TeacherUI {
 
         // ── TAB 1: WHITEBOARD ──────────────────────────────────────────────
         javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
-        ScrollPane wbScroller = new ScrollPane(canvasGroup);
+        // Centering holder: always at least as large as the viewport so the
+        // canvas stays centred; grows beyond viewport when zoomed in (scrollbars appear).
+        javafx.scene.layout.StackPane centeredHolder = new javafx.scene.layout.StackPane(canvasGroup);
+        centeredHolder.setAlignment(Pos.CENTER);
+        centeredHolder.getStyleClass().add("canvas-holder");
+        wbScroller = new ScrollPane(centeredHolder);
+        wbScroller.setPannable(false); // prevent drag-to-scroll during freehand drawing
         wbScroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
+        wbScroller.viewportBoundsProperty().addListener((obs, old, b) -> {
+            centeredHolder.setMinWidth(b.getWidth());
+            centeredHolder.setMinHeight(b.getHeight());
+        });
         whiteboardTab = new Tab("  Whiteboard  ", wbScroller);
         whiteboardTab.setClosable(false);
 
@@ -405,10 +523,14 @@ public class TeacherUI {
         slideCountLabel.getStyleClass().add("lbl-section");
         slideCountLabel.setPadding(new Insets(0, 6, 0, 6));
         nextSlideBtn = new Button("Next \u2192"); nextSlideBtn.setDisable(true);
+        Button exportPptBtn = new Button("Export PPT");
+        exportPptBtn.setDisable(true); // enabled only when a PPT is loaded
 
         HBox pptControls = new HBox(10, loadPptBtn, pptFileLabel,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
-                prevSlideBtn, slideCountLabel, nextSlideBtn);
+                prevSlideBtn, slideCountLabel, nextSlideBtn,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                exportPptBtn);
         pptControls.setAlignment(Pos.CENTER_LEFT);
         pptControls.getStyleClass().add("ppt-controls");
 
@@ -486,7 +608,7 @@ public class TeacherUI {
             if (code == null || code.isBlank()) return;
             server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData(code, "Plain Text"), "Teacher"));
             codeStatusLabel.setText("Last synced: " + java.time.LocalTime.now().withNano(0));
-            codeStatusLabel.setStyle("-fx-text-fill: #059669;");
+            codeStatusLabel.getStyleClass().setAll("text-success");
         });
         codeEditor.textProperty().addListener((obs, oldVal, newVal) -> codeShareDebounce.playFromStart());
 
@@ -494,7 +616,7 @@ public class TeacherUI {
             codeEditor.clear();
             if (server != null) server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData("", "Plain Text"), "Teacher"));
             codeStatusLabel.setText("Code cleared");
-            codeStatusLabel.setStyle("-fx-text-fill: #dc2626;");
+            codeStatusLabel.getStyleClass().setAll("text-error");
         });
 
         VBox codePanel = new VBox(codeControls, codeArea);
@@ -513,6 +635,10 @@ public class TeacherUI {
             boolean drawVisible = (newTab != codeTab && newTab != fileTab);
             toolbar.setVisible(drawVisible);     toolbar.setManaged(drawVisible);
             shapeToolbar.setVisible(drawVisible); shapeToolbar.setManaged(drawVisible);
+            
+            if (syncTabsBtn.isSelected() && server != null) {
+                server.broadcast(new Message(MessageType.TAB_SWITCH, tabPane.getSelectionModel().getSelectedIndex(), "Teacher"));
+            }
         });
         toolbar.setVisible(true);     toolbar.setManaged(true);
         shapeToolbar.setVisible(true); shapeToolbar.setManaged(true);
@@ -545,27 +671,75 @@ public class TeacherUI {
             if (file == null) return;
             loadPptBtn.setDisable(true);
             pptFileLabel.setText("Loading " + file.getName() + "...");
-            pptFileLabel.setStyle("-fx-text-fill: #6b7280;");
+            pptFileLabel.getStyleClass().setAll("text-muted");
             pptService.loadAsync(file,
                     () -> {
+                        slideMarkingsMap.clear();  // new file — discard any previous slide markings
                         loadPptBtn.setDisable(false);
                         pptFileLabel.setText(file.getName());
-                        pptFileLabel.setStyle("");
+                        pptFileLabel.getStyleClass().clear();
+                        prevSlideBtn.setDisable(false);
+                        nextSlideBtn.setDisable(false);
+                        exportPptBtn.setDisable(false);
                         displayAndBroadcastSlide(pptService.getCurrentSlideData());
                         updateNavButtons();
                     },
                     errorMsg -> {
                         loadPptBtn.setDisable(false);
                         pptFileLabel.setText("Failed to load");
-                        pptFileLabel.setStyle("-fx-text-fill: #dc2626;");
+                        pptFileLabel.getStyleClass().setAll("text-error");
                         showAlert(Alert.AlertType.ERROR, "PPTX Load Error",
                                 "Could not load the selected file", errorMsg);
                     }
             );
         });
 
-        prevSlideBtn.setOnAction(e -> { SlideData sd = pptService.prevSlide(); if (sd != null) { displayAndBroadcastSlide(sd); updateNavButtons(); } });
-        nextSlideBtn.setOnAction(e -> { SlideData sd = pptService.nextSlide(); if (sd != null) { displayAndBroadcastSlide(sd); updateNavButtons(); } });
+        prevSlideBtn.setOnAction(e -> { saveCurrentSlideMarkings(); SlideData sd = pptService.prevSlide(); if (sd != null) { displayAndBroadcastSlide(sd); restoreCurrentSlideMarkings(); updateNavButtons(); } });
+        nextSlideBtn.setOnAction(e -> { saveCurrentSlideMarkings(); SlideData sd = pptService.nextSlide(); if (sd != null) { displayAndBroadcastSlide(sd); restoreCurrentSlideMarkings(); updateNavButtons(); } });
+
+        exportPptBtn.setOnAction(e -> {
+            if (!pptService.isLoaded()) return;
+            saveCurrentSlideMarkings();  // capture the slide currently on screen
+
+            FileChooser fc = new FileChooser();
+            fc.setTitle("Export PPT with Markings");
+            fc.getExtensionFilters().add(
+                    new FileChooser.ExtensionFilter("PowerPoint Files", "*.pptx"));
+            fc.setInitialFileName("exported_with_markings.pptx");
+            File outputFile = fc.showSaveDialog(exportPptBtn.getScene().getWindow());
+            if (outputFile == null) return;
+
+            // Flatten per-slide maps (SavedSlideMarkings is private to TeacherUI)
+            Map<Integer, List<StrokeData>> strokesPerSlide = new HashMap<>();
+            Map<Integer, List<ShapeData>>  shapesPerSlide  = new HashMap<>();
+            slideMarkingsMap.forEach((idx, m) -> {
+                strokesPerSlide.put(idx, m.strokes);
+                shapesPerSlide.put(idx, m.shapes);
+            });
+
+            exportPptBtn.setDisable(true);
+            exportPptBtn.setText("Exporting...");
+
+            pptService.exportAllSlidesWithMarkings(
+                    strokesPerSlide,
+                    shapesPerSlide,
+                    pptWhiteboardPane.getCanvasW(),
+                    pptWhiteboardPane.getCanvasH(),
+                    outputFile,
+                    () -> {
+                        exportPptBtn.setDisable(false);
+                        exportPptBtn.setText("Export PPT");
+                        showAlert(Alert.AlertType.INFORMATION, "Export Complete",
+                                "PPT exported successfully.", outputFile.getAbsolutePath());
+                    },
+                    err -> {
+                        exportPptBtn.setDisable(false);
+                        exportPptBtn.setText("Export PPT");
+                        showAlert(Alert.AlertType.ERROR, "Export Failed",
+                                "Could not export PPT.", err);
+                    }
+            );
+        });
 
         stage.setOnCloseRequest(e -> {
             if (pptService != null) pptService.shutdown();
@@ -575,13 +749,21 @@ public class TeacherUI {
         stage.setMinWidth(900);
         stage.setMinHeight(540);
 
-        javafx.geometry.Rectangle2D screenBounds = javafx.stage.Screen.getPrimary().getVisualBounds();
-        mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
-        mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+        mainScene = stage.getScene();
+        if (mainScene != null) {
+            mainScene.setRoot(root);
+            mainScene.getStylesheets().clear();
+            mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+        } else {
+            javafx.geometry.Rectangle2D screenBounds = javafx.stage.Screen.getPrimary().getVisualBounds();
+            mainScene = new Scene(root, screenBounds.getWidth(), screenBounds.getHeight());
+            mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
+            stage.setScene(mainScene);
+        }
+
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
-        stage.setScene(mainScene);
         stage.setTitle("Classroom Collaboration — Teacher");
         stage.setMaximized(true);
         stage.show();
@@ -590,9 +772,9 @@ public class TeacherUI {
             if (tabPane.getSelectionModel().getSelectedItem() != pptTab) return;
             if (pptService == null || !pptService.isLoaded()) return;
             SlideData sd = null;
-            if (e.getCode() == javafx.scene.input.KeyCode.RIGHT || e.getCode() == javafx.scene.input.KeyCode.DOWN) { sd = pptService.nextSlide(); e.consume(); }
-            else if (e.getCode() == javafx.scene.input.KeyCode.LEFT || e.getCode() == javafx.scene.input.KeyCode.UP) { sd = pptService.prevSlide(); e.consume(); }
-            if (sd != null) { displayAndBroadcastSlide(sd); updateNavButtons(); }
+            if (e.getCode() == javafx.scene.input.KeyCode.RIGHT || e.getCode() == javafx.scene.input.KeyCode.DOWN) { saveCurrentSlideMarkings(); sd = pptService.nextSlide(); e.consume(); }
+            else if (e.getCode() == javafx.scene.input.KeyCode.LEFT || e.getCode() == javafx.scene.input.KeyCode.UP) { saveCurrentSlideMarkings(); sd = pptService.prevSlide(); e.consume(); }
+            if (sd != null) { displayAndBroadcastSlide(sd); restoreCurrentSlideMarkings(); updateNavButtons(); }
         });
 
         refreshStudentList();
@@ -738,7 +920,7 @@ public class TeacherUI {
         HBox row = new HBox(12, nameLbl, sizeLbl, progressBar, statusLbl);
         row.setAlignment(Pos.CENTER_LEFT);
         row.setPadding(new Insets(8, 12, 8, 12));
-        row.setStyle("-fx-background-color: transparent; -fx-border-color: transparent;");
+        row.getStyleClass().clear();
 
         // Swap out empty-state label on first file
         if (!fileTabHasItems) {
@@ -783,8 +965,8 @@ public class TeacherUI {
                 Platform.runLater(() -> {
                     progressBar.setProgress(0);
                     statusLbl.setText("\u2717 Error: " + errMsg);
-                    statusLbl.setStyle("-fx-text-fill: #dc2626;");
-                    row.setStyle("-fx-background-color: #fff5f5; -fx-border-radius: 6; -fx-background-radius: 6;");
+                    statusLbl.getStyleClass().setAll("text-error");
+                    row.getStyleClass().setAll("row-error");
                 });
             }
 
@@ -796,7 +978,7 @@ public class TeacherUI {
                 Platform.runLater(() -> {
                     progressBar.setProgress(1.0);
                     statusLbl.setText("\u2713 Shared to all students");
-                    statusLbl.setStyle("-fx-text-fill: #059669; -fx-font-weight: bold;");
+                    statusLbl.getStyleClass().setAll("text-success-bold");
                 });
             }
         }, "file-sender-" + transferId.substring(0, 8));
@@ -822,8 +1004,48 @@ public class TeacherUI {
         return tb;
     }
 
+    private void saveCurrentSlideMarkings() {
+        if (pptService == null || !pptService.isLoaded()) return;
+        int idx = pptService.getCurrentIndex();
+        WhiteboardPane.FullState state = pptWhiteboardPane.getFullState();
+        List<StrokeData> strokes = state.strokes.stream()
+                .filter(s -> !s.isAnnotation())
+                .collect(Collectors.toList());
+        List<ShapeData> shapes = new ArrayList<>(pptWhiteboardPane.getShapeDataMap().values())
+                .stream()
+                .filter(sd -> !sd.isAnnotation())
+                .collect(Collectors.toList());
+        if (!strokes.isEmpty() || !shapes.isEmpty()) {
+            slideMarkingsMap.put(idx, new SavedSlideMarkings(strokes, shapes));
+        } else {
+            slideMarkingsMap.remove(idx); // Clear if user erased everything
+        }
+    }
+
+    private void restoreCurrentSlideMarkings() {
+        if (pptService == null || !pptService.isLoaded()) return;
+        int idx = pptService.getCurrentIndex();
+        SavedSlideMarkings saved = slideMarkingsMap.get(idx);
+        if (saved != null) {
+            WhiteboardPane.FullState state = new WhiteboardPane.FullState(
+                    pptWhiteboardPane.getCanvasW(),
+                    pptWhiteboardPane.getCanvasH(),
+                    saved.strokes,
+                    saved.shapes
+            );
+            pptWhiteboardPane.applyFullState(state);
+            
+            // Sync the restored state to all students
+            if (server != null) {
+                server.broadcast(new Message(MessageType.FULL_STATE, state, "Teacher_PPT"));
+            }
+        }
+    }
+
     private void displayAndBroadcastSlide(SlideData sd) {
         if (sd == null) return;
+        // Note: saveCurrentSlideMarkings() is called by each navigation caller
+        // BEFORE nextSlide()/prevSlide() so getCurrentIndex() still has the old index.
         pptWhiteboardPane.clearWhiteboard();
         pptWhiteboardPane.clearAnnotations();
         if (server != null) {

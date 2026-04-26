@@ -235,7 +235,7 @@
 .top-bar        { -fx-background-color: #ffffff; -fx-border-color: #e5e7eb; -fx-border-width: 0 0 1 0; -fx-padding: 10px 16px; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.06), 4, 0, 0, 1); }
 .toolbar-main   { -fx-background-color: #f8fafc; -fx-border-color: #e5e7eb; -fx-border-width: 0 0 1 0; -fx-padding: 7px 14px; }
 .toolbar-shape  { -fx-background-color: #f1f5f9; -fx-border-color: #e5e7eb; -fx-border-width: 0 0 1 0; -fx-padding: 5px 14px; }
-.left-panel     { -fx-background-color: #f8fafc; -fx-border-color: #e5e7eb; -fx-border-width: 0 1 0 0; -fx-padding: 14px 12px; -fx-min-width: 190px; -fx-pref-width: 200px; }
+.left-panel     { -fx-background-color: #f8fafc; -fx-border-color: #e5e7eb; -fx-border-width: 0 1 0 0; -fx-padding: 14px 12px; -fx-min-width: 215px; -fx-pref-width: 225px; }
 .ppt-controls   { -fx-background-color: #f8fafc; -fx-border-color: #e5e7eb; -fx-border-width: 0 0 1 0; -fx-padding: 8px 14px; }
 .code-toolbar   { -fx-background-color: #f3f4f6; -fx-border-color: #e5e7eb; -fx-border-width: 0 0 1 0; -fx-padding: 7px 14px; }
 .status-bar     { -fx-background-color: #f8fafc; -fx-border-color: #e5e7eb; -fx-border-width: 1 0 0 0; -fx-padding: 5px 14px; }
@@ -268,3 +268,31 @@
 .dialog-pane .content.label { -fx-text-fill: #4b5563; }
 .dialog-pane .button-bar .button { -fx-background-color: #ffffff; -fx-text-fill: #374151; -fx-border-color: #d1d5db; -fx-border-radius: 5px; -fx-background-radius: 5px; }
 .dialog-pane .button-bar .button:hover { -fx-background-color: #f9fafb; -fx-border-color: #2563eb; }
+
+/* ── Dynamic State Classes ────────────────────────────────────────────────── */
+.canvas-holder { -fx-background-color: #e8edf5; }
+.text-success { -fx-text-fill: #059669; }
+.text-success-bold { -fx-text-fill: #059669; -fx-font-weight: bold; }
+.text-error { -fx-text-fill: #dc2626; }
+.text-muted { -fx-text-fill: #6b7280; }
+.row-error { -fx-background-color: #fff5f5; -fx-border-radius: 6; -fx-background-radius: 6; }
+.role-teacher { -fx-text-fill: #2563eb; -fx-font-size: 11px; -fx-font-weight: bold; }
+.role-student { -fx-text-fill: #059669; -fx-font-size: 11px; -fx-font-weight: bold; }
+
+.btn-sync {
+    -fx-background-color: #fed7aa; -fx-text-fill: #9a3412; -fx-background-radius: 4px;
+    -fx-border-color: #ea580c; -fx-border-radius: 4px; -fx-border-width: 1px;
+    -fx-padding: 5px 10px; -fx-cursor: hand; -fx-font-weight: bold;
+}
+.btn-sync:hover { -fx-background-color: #fdba74; }
+.btn-sync:selected { -fx-background-color: #fed7aa; -fx-text-fill: #9a3412; -fx-border-color: #ea580c; }
+.btn-sync:selected:hover { -fx-background-color: #fdba74; }
+
+.btn-copy {
+    -fx-background-color: #f3f4f6; -fx-text-fill: #374151; -fx-border-color: #d1d5db;
+    -fx-border-width: 1px; -fx-background-radius: 5px; -fx-border-radius: 5px;
+}
+.btn-copy-success {
+    -fx-background-color: #d1fae5; -fx-text-fill: #065f46; -fx-border-color: #059669;
+    -fx-border-width: 1px; -fx-background-radius: 5px; -fx-border-radius: 5px;
+}

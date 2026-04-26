@@ -1,0 +1,370 @@
+FEATURE: Export Complete PPT with Per-Slide Vector Markings
+============================================================
+
+Read Project_Context.md and all Phase architecture docs in _docs/ before starting.
+
+
+---
+
+FEATURE SUMMARY
+---------------
+When the teacher makes markings on the PPT module across multiple slides (shapes like
+RECT, ELLIPSE, LINE, ARROW, TEXT and freehand strokes — but NOT annotation-mode
+markings), they should be able to export the ENTIRE .pptx file where:
+
+  - All original slides are fully intact (not converted to images).
+  - Each slide carries its own respective markings as native PPTX vector shapes.
+  - Example: rectangle drawn on slide 1 appears on slide 1; circle drawn on slide 2
+    appears on slide 2; slides with no markings are exported untouched.
+  - The exported file opens correctly in PowerPoint and LibreOffice.
+  - Markings stay perfectly sharp at any zoom level.
+  - The save path is chosen by the teacher via a FileChooser dialog.
+
+The existing rendering pipeline (slide → PNG → network → student screens) must remain
+completely unchanged. No changes to WhiteboardPane drawing logic, networking, or StudentUI.
+
+
+---
+
+CRITICAL ARCHITECTURAL NOTE — Per-Slide Marking Storage
+--------------------------------------------------------
+Currently, displayAndBroadcastSlide() in TeacherUI calls clearWhiteboard() and
+clearAnnotations() every time the teacher navigates to a new slide. This means
+markings from the previous slide are erased from memory on navigation.
+
+To support per-slide export, markings must be SAVED before they are cleared.
+This requires a new per-slide marking store in TeacherUI (see Step 1 below).
+
+
+---
+
+IMPLEMENTATION PLAN
+--------------------
+
+## STEP 1 — TeacherUI.java: Add per-slide marking store
+
+A. Add a new private field at the top of TeacherUI:
+
+     private final Map<Integer, SavedSlideMarkings> slideMarkingsMap = new HashMap<>();
+
+   Where SavedSlideMarkings is a simple private static inner class inside TeacherUI:
+
+     private static class SavedSlideMarkings {
+         final List<StrokeData> strokes;
+         final List<ShapeData>  shapes;
+         SavedSlideMarkings(List<StrokeData> strokes, List<ShapeData> shapes) {
+             this.strokes = strokes;
+             this.shapes  = shapes;
+         }
+     }
+
+B. Create a private helper method saveCurrentSlideMarkings():
+
+     private void saveCurrentSlideMarkings() {
+         if (!pptService.isLoaded()) return;
+         int idx = pptService.getCurrentIndex();
+         WhiteboardPane.BoardState state = pptWhiteboardPane.getBoardState();
+         List<StrokeData> strokes = state.strokes.stream()
+             .filter(s -> !s.isAnnotation())
+             .collect(Collectors.toList());
+         List<ShapeData> shapes = new ArrayList<>(pptWhiteboardPane.getShapeDataMap().values())
+             .stream()
+             .filter(sd -> !sd.isAnnotation())
+             .collect(Collectors.toList());
+         if (!strokes.isEmpty() || !shapes.isEmpty()) {
+             slideMarkingsMap.put(idx, new SavedSlideMarkings(strokes, shapes));
+         }
+     }
+
+C. In displayAndBroadcastSlide(), call saveCurrentSlideMarkings() BEFORE the two
+   clear calls. The method should now look like:
+
+     private void displayAndBroadcastSlide(SlideData sd) {
+         if (sd == null) return;
+         saveCurrentSlideMarkings();              // <-- ADD THIS LINE FIRST
+         pptWhiteboardPane.clearWhiteboard();
+         pptWhiteboardPane.clearAnnotations();
+         if (server != null) {
+             server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, "Teacher_PPT"));
+             server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, "Teacher_PPT"));
+         }
+         Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
+         pptImageView.setImage(fxImg);
+         if (server != null) server.broadcast(new Message(MessageType.PPT_SLIDE, sd, "Teacher"));
+     }
+
+D. Also clear slideMarkingsMap when a new PPT file is loaded (in the loadAsync
+   onSuccess callback inside TeacherUI):
+
+     slideMarkingsMap.clear();
+
+
+---
+
+## STEP 2 — TeacherUI.java: Add Export button
+
+A. In the PPT tab toolbar (where prevSlideBtn, nextSlideBtn are defined), add:
+
+     Button exportPptBtn = new Button("Export PPT");
+     exportPptBtn.setDisable(true);   // enabled only when a PPT is loaded
+
+B. Enable exportPptBtn in the same place prevSlideBtn/nextSlideBtn are enabled
+   after a PPT loads successfully.
+
+C. Wire the button action:
+
+     exportPptBtn.setOnAction(e -> {
+         if (!pptService.isLoaded()) return;
+
+         // Save markings for the slide currently on screen before exporting
+         saveCurrentSlideMarkings();
+
+         FileChooser fc = new FileChooser();
+         fc.setTitle("Export PPT with Markings");
+         fc.getExtensionFilters().add(
+             new FileChooser.ExtensionFilter("PowerPoint Files", "*.pptx"));
+         fc.setInitialFileName("exported_with_markings.pptx");
+         File outputFile = fc.showSaveDialog(exportPptBtn.getScene().getWindow());
+         if (outputFile == null) return;
+
+         // Build two flat maps to pass to PptService
+         // (SavedSlideMarkings is private to TeacherUI so flatten before passing)
+         Map<Integer, List<StrokeData>> strokesPerSlide = new HashMap<>();
+         Map<Integer, List<ShapeData>>  shapesPerSlide  = new HashMap<>();
+         slideMarkingsMap.forEach((idx, m) -> {
+             strokesPerSlide.put(idx, m.strokes);
+             shapesPerSlide.put(idx,  m.shapes);
+         });
+
+         exportPptBtn.setDisable(true);
+         exportPptBtn.setText("Exporting...");
+
+         pptService.exportAllSlidesWithMarkings(
+             strokesPerSlide,
+             shapesPerSlide,
+             outputFile,
+             () -> {
+                 exportPptBtn.setDisable(false);
+                 exportPptBtn.setText("Export PPT");
+                 showAlert(Alert.AlertType.INFORMATION, "Export Complete",
+                     "PPT exported successfully.", outputFile.getAbsolutePath());
+             },
+             err -> {
+                 exportPptBtn.setDisable(false);
+                 exportPptBtn.setText("Export PPT");
+                 showAlert(Alert.AlertType.ERROR, "Export Failed",
+                     "Could not export PPT.", err);
+             }
+         );
+     });
+
+
+---
+
+## STEP 3 — PptService.java: Add exportAllSlidesWithMarkings()
+
+A. Add a new private field:
+
+     private File loadedFile = null;
+
+B. In loadAsync(), after this.loaded = true, store the file reference:
+
+     this.loadedFile = file;
+
+   Also reset it at the top of loadAsync before rendering starts:
+
+     this.loadedFile = null;
+
+C. Add the new public export method (must run on renderExecutor):
+
+   Signature:
+     public void exportAllSlidesWithMarkings(
+         Map<Integer, List<StrokeData>> strokesPerSlide,
+         Map<Integer, List<ShapeData>>  shapesPerSlide,
+         File outputFile,
+         Runnable onSuccess,
+         Consumer<String> onError
+     )
+
+   Body — submit to renderExecutor:
+
+     renderExecutor.submit(() -> {
+         try (XMLSlideShow pptx = new XMLSlideShow(new FileInputStream(loadedFile))) {
+
+             Dimension pageSize = pptx.getPageSize();
+
+             // Canvas height was rendered at this height
+             double imgH = pageSize.height * (TARGET_WIDTH / (double) pageSize.width);
+
+             // Conversion factors: canvas pixels → EMU
+             // POI page size is in points (1 pt = 12700 EMU)
+             long slideWidthEmu  = (long)(pageSize.width  * 12700);
+             long slideHeightEmu = (long)(pageSize.height * 12700);
+             double xFactor = (double) slideWidthEmu  / TARGET_WIDTH;
+             double yFactor = (double) slideHeightEmu / imgH;
+
+             List<XSLFSlide> slides = pptx.getSlides();
+
+             for (int i = 0; i < slides.size(); i++) {
+                 XSLFSlide slide = slides.get(i);
+
+                 List<ShapeData>  shapes  = shapesPerSlide.getOrDefault(i, List.of());
+                 List<StrokeData> strokes = strokesPerSlide.getOrDefault(i, List.of());
+
+                 for (ShapeData sd : shapes) {
+                     addPoiShape(slide, sd, xFactor, yFactor);
+                 }
+                 for (StrokeData st : strokes) {
+                     addPoiStroke(slide, st, xFactor, yFactor);
+                 }
+             }
+
+             try (FileOutputStream fos = new FileOutputStream(outputFile)) {
+                 pptx.write(fos);
+             }
+
+             javafx.application.Platform.runLater(onSuccess);
+
+         } catch (Exception e) {
+             String msg = "Export failed: " + e.getMessage();
+             javafx.application.Platform.runLater(() -> onError.accept(msg));
+         }
+     });
+
+D. Add private helper addPoiShape():
+
+     private void addPoiShape(XSLFSlide slide, ShapeData sd,
+                               double xFactor, double yFactor) {
+         long x = (long)(sd.getX() * xFactor);
+         long y = (long)(sd.getY() * yFactor);
+         long w = (long)(sd.getW() * xFactor);
+         long h = (long)(sd.getH() * yFactor);
+         Rectangle2D.Double anchor = new Rectangle2D.Double(x, y, w, h);
+         java.awt.Color color = parseHex(sd.getStrokeHex());
+
+         switch (sd.getType()) {
+             case RECT -> {
+                 XSLFAutoShape shape = slide.createAutoShape();
+                 shape.setShapeType(ShapeType.RECT);
+                 shape.setAnchor(anchor);
+                 shape.setLineColor(color);
+                 shape.setLineWidth(sd.getStrokeWidth());
+                 shape.setFillColor(null);
+             }
+             case ELLIPSE -> {
+                 XSLFAutoShape shape = slide.createAutoShape();
+                 shape.setShapeType(ShapeType.ELLIPSE);
+                 shape.setAnchor(anchor);
+                 shape.setLineColor(color);
+                 shape.setLineWidth(sd.getStrokeWidth());
+                 shape.setFillColor(null);
+             }
+             case LINE -> {
+                 XSLFConnector line = slide.createConnector();
+                 line.setAnchor(anchor);
+                 line.setLineColor(color);
+                 line.setLineWidth(sd.getStrokeWidth());
+             }
+             case ARROW -> {
+                 XSLFConnector arrow = slide.createConnector();
+                 arrow.setAnchor(anchor);
+                 arrow.setLineColor(color);
+                 arrow.setLineWidth(sd.getStrokeWidth());
+                 CTLineEndProperties endArrow = arrow.getSpPr().getLn().addNewTailEnd();
+                 endArrow.setType(STLineEndType.ARROW);
+             }
+             case TEXT -> {
+                 XSLFTextBox tb = slide.createTextBox();
+                 tb.setAnchor(anchor);
+                 XSLFTextParagraph para = tb.addNewTextParagraph();
+                 XSLFTextRun run = para.addNewTextRun();
+                 run.setText(sd.getText() != null ? sd.getText() : "");
+                 run.setFontColor(color);
+                 run.setFontSize(sd.getFontSize());
+             }
+         }
+     }
+
+E. Add private helper addPoiStroke():
+
+     private void addPoiStroke(XSLFSlide slide, StrokeData st,
+                                double xFactor, double yFactor) {
+         List<javafx.geometry.Point2D> pts = st.getPoints();
+         if (pts == null || pts.size() < 2) return;
+
+         Path2D.Double path = new Path2D.Double();
+         path.moveTo(pts.get(0).getX() * xFactor, pts.get(0).getY() * yFactor);
+         for (int i = 1; i < pts.size(); i++) {
+             path.lineTo(pts.get(i).getX() * xFactor, pts.get(i).getY() * yFactor);
+         }
+
+         XSLFFreeformShape freeform = slide.createFreeform();
+         freeform.setPath(path);
+         freeform.setLineColor(parseHex(st.getColorHex()));
+         freeform.setLineWidth(st.getStrokeWidth());
+         freeform.setFillColor(null);
+     }
+
+F. Add private helper parseHex():
+
+     private java.awt.Color parseHex(String hex) {
+         if (hex == null || hex.isEmpty()) return java.awt.Color.BLACK;
+         return java.awt.Color.decode(hex.startsWith("#") ? hex : "#" + hex);
+     }
+
+
+---
+
+## STEP 4 — WhiteboardPane.java: Expose shapeDataMap if needed
+
+Check if getBoardState() already returns shapes. If shapeDataMap is not accessible
+from TeacherUI, add this public getter:
+
+     public Map<String, ShapeData> getShapeDataMap() {
+         return Collections.unmodifiableMap(shapeDataMap);
+     }
+
+Do not change anything else in WhiteboardPane.
+
+
+---
+
+THINGS TO NOT CHANGE
+---------------------
+- Do not modify the rendering pipeline in PptService (loadAsync, renderedSlides, etc.)
+- Do not modify StudentUI, networking, ClientHandler, TeacherServer
+- Do not modify WhiteboardPane drawing or event logic
+- Do not change any model classes (ShapeData, StrokeData, SlideData, Message, etc.)
+- Do not change pom.xml — all required POI classes are already present under the
+  existing org.apache.poi dependency (version 5.3.0)
+
+
+---
+
+IMPORTS NEEDED IN PptService.java
+----------------------------------
+org.apache.poi.xslf.usermodel.XSLFAutoShape
+org.apache.poi.xslf.usermodel.XSLFConnector
+org.apache.poi.xslf.usermodel.XSLFTextBox
+org.apache.poi.xslf.usermodel.XSLFFreeformShape
+org.apache.poi.xslf.usermodel.XSLFTextParagraph
+org.apache.poi.xslf.usermodel.XSLFTextRun
+org.apache.poi.sl.usermodel.ShapeType
+org.openxmlformats.schemas.drawingml.x2006.main.CTLineEndProperties
+org.openxmlformats.schemas.drawingml.x2006.main.STLineEndType
+java.awt.geom.Path2D
+java.awt.geom.Rectangle2D
+java.awt.Color
+java.util.Map
+java.util.List
+com.classroom.model.ShapeData
+com.classroom.model.StrokeData
+
+IMPORTS NEEDED IN TeacherUI.java
+----------------------------------
+java.util.HashMap
+java.util.Map
+java.util.stream.Collectors
+javafx.stage.FileChooser
+com.classroom.model.ShapeData
+com.classroom.model.StrokeData
