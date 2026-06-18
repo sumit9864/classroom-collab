@@ -49,6 +49,10 @@ public class WhiteboardPane extends StackPane {
     private String containerBgStyle   = "#e0e0e0";          // outer pane bg (theme-aware)
     private double strokeWidth     = 2.0;
     private double zoomLevel       = 1.0;
+    // Scale transform with pivot at (0,0) — keeps the Group's bounds non-negative
+    // so the centering StackPane positions the canvas symmetrically (no left/top bias).
+    private final javafx.scene.transform.Scale scaleTransform =
+            new javafx.scene.transform.Scale(1, 1, 0, 0);
     private boolean isTransparentBackground = false;
 
     // ── Unified Action History ────────────────────────────────────────────────
@@ -131,13 +135,17 @@ public class WhiteboardPane extends StackPane {
     // Never called on the student side (set to null in student constructor).
     private Consumer<StrokeData> onStrokeProgress;
 
-    // Throttle STROKE_PROGRESS to ~60fps so we do not fire a network message for every pixel
-    private long lastStrokeProgressMs = 0L;
-    private static final long STROKE_PROGRESS_INTERVAL_MS = 16L; // ~60fps
+    // Throttle STROKE_PROGRESS to ~60fps so we do not fire a network message for every pixel.
+    // nanoTime() is used instead of currentTimeMillis() because currentTimeMillis() has
+    // ~10–15 ms resolution on Windows, which would effectively cap updates at ~33–67fps.
+    // nanoTime() is a monotonic, high-resolution counter with nanosecond resolution
+    // that is not subject to system-time adjustments.
+    private long lastStrokeProgressNs = 0L;
+    private static final long STROKE_PROGRESS_INTERVAL_NS = 16_000_000L; // 16 ms in nanoseconds
 
-    // Throttle SHAPE_UPDATE-during-drag to ~60fps
-    private long lastShapeDragMs = 0L;
-    private static final long SHAPE_DRAG_INTERVAL_MS = 16L;
+    // Throttle SHAPE_UPDATE-during-drag to ~60fps (same rationale as STROKE_PROGRESS above)
+    private long lastShapeDragNs = 0L;
+    private static final long SHAPE_DRAG_INTERVAL_NS = 16_000_000L;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     public WhiteboardPane(boolean teacherMode, Consumer<StrokeData> onStrokeDrawn) {
@@ -165,6 +173,8 @@ public class WhiteboardPane extends StackPane {
         setMinSize(800, 500);
         setPrefSize(800, 500);
         setMaxSize(800, 500);
+        // Register the pivot-(0,0) Scale transform once; setZoom() only updates its x/y values.
+        this.getTransforms().add(scaleTransform);
 
         redrawAll();
 
@@ -192,6 +202,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMousePressed(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || !e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from capturing the drag
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             currentPoints.clear();
@@ -218,6 +229,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMouseDragged(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || !e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from panning
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             double px = e.getX(), py = e.getY();
@@ -236,9 +248,9 @@ public class WhiteboardPane extends StackPane {
             lastX = px; lastY = py;
             // Fire STROKE_PROGRESS callback — throttled to STROKE_PROGRESS_INTERVAL_MS
             if (onStrokeProgress != null) {
-                long now = System.currentTimeMillis();
-                if (now - lastStrokeProgressMs >= STROKE_PROGRESS_INTERVAL_MS) {
-                    lastStrokeProgressMs = now;
+                long now = System.nanoTime();
+                if (now - lastStrokeProgressNs >= STROKE_PROGRESS_INTERVAL_NS) {
+                    lastStrokeProgressNs = now;
                     StrokeData progressStroke = new StrokeData(
                         new ArrayList<>(currentPoints),
                         drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
@@ -252,6 +264,7 @@ public class WhiteboardPane extends StackPane {
         annotationCanvas.setOnMouseReleased(e -> {
             boolean isFree = (drawMode == DrawMode.FREEHAND || drawMode == DrawMode.ERASER);
             if (!isFree || currentPoints.isEmpty()) return;
+            e.consume(); // prevent ScrollPane from capturing the event
             // Stroke width stored as absolute pixels; canvas size is always in sync
             // across the network via CANVAS_RESIZE, so absolute coords are safe.
             StrokeData stroke = new StrokeData(new ArrayList<>(currentPoints),
@@ -268,6 +281,7 @@ public class WhiteboardPane extends StackPane {
     private void setupOverlayHandlers() {
         shapeOverlayPane.setOnMousePressed(e -> {
             if (!e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from capturing the drag
             if (drawMode == DrawMode.SELECT) {
                 clearHandles();
                 selectedShapeId = null;
@@ -297,6 +311,7 @@ public class WhiteboardPane extends StackPane {
         });
         shapeOverlayPane.setOnMouseDragged(e -> {
             if (!e.isPrimaryButtonDown()) return;
+            e.consume(); // prevent ScrollPane from panning
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 updatePreview(e.getX(), e.getY());
 
@@ -306,9 +321,9 @@ public class WhiteboardPane extends StackPane {
                     if (sd != null) {
                         updateShapeGeometry(sd, shapeDragX, shapeDragY, e.getX(), e.getY());
                         syncNodeFromData(sd);
-                        long now = System.currentTimeMillis();
-                        if (now - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
-                            lastShapeDragMs = now;
+                        long now = System.nanoTime();
+                        if (now - lastShapeDragNs >= SHAPE_DRAG_INTERVAL_NS) {
+                            lastShapeDragNs = now;
                             if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
                         }
                     }
@@ -316,6 +331,7 @@ public class WhiteboardPane extends StackPane {
             }
         });
         shapeOverlayPane.setOnMouseReleased(e -> {
+            e.consume(); // prevent ScrollPane from capturing the event
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 finalizeShape(e.getX(), e.getY());
             }
@@ -351,9 +367,7 @@ public class WhiteboardPane extends StackPane {
                 ln.setStroke(c); ln.setStrokeWidth(strokeWidth);
                 ln.getStrokeDashArray().addAll(6.0, 3.0);
                 Polygon head = new Polygon();
-                head.setFill(Color.TRANSPARENT); head.setStroke(c);
-                head.setStrokeWidth(strokeWidth);
-                head.getStrokeDashArray().addAll(6.0, 3.0);
+                head.setFill(c); head.setStroke(c); head.setStrokeWidth(1);
                 grp.getChildren().addAll(ln, head);
                 previewNode = grp; break;
             }
@@ -683,9 +697,9 @@ public class WhiteboardPane extends StackPane {
             syncNodeFromData(sd);
             updateHandles();
             // Stream position to students while dragging (throttled)
-            long nowDrag = System.currentTimeMillis();
-            if (nowDrag - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
-                lastShapeDragMs = nowDrag;
+            long nowDrag = System.nanoTime();
+            if (nowDrag - lastShapeDragNs >= SHAPE_DRAG_INTERVAL_NS) {
+                lastShapeDragNs = nowDrag;
                 if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
             }
         });
@@ -801,9 +815,9 @@ public class WhiteboardPane extends StackPane {
             syncNodeFromData(sd);
             updateHandles();
             // Stream resize to students while dragging (throttled)
-            long nowResize = System.currentTimeMillis();
-            if (nowResize - lastShapeDragMs >= SHAPE_DRAG_INTERVAL_MS) {
-                lastShapeDragMs = nowResize;
+            long nowResize = System.nanoTime();
+            if (nowResize - lastShapeDragNs >= SHAPE_DRAG_INTERVAL_NS) {
+                lastShapeDragNs = nowResize;
                 if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
             }
         });
@@ -884,6 +898,11 @@ public class WhiteboardPane extends StackPane {
         }
         List<ShapeData> shapes = new ArrayList<>(shapeDataMap.values());
         return new FullState(getCanvasW(), getCanvasH(), strokes, shapes);
+    }
+
+    /** Read-only view of all currently live shapes on this whiteboard. Used by TeacherUI for PPT export. */
+    public java.util.Map<String, ShapeData> getShapeDataMap() {
+        return java.util.Collections.unmodifiableMap(shapeDataMap);
     }
 
     /** Replays a FullState snapshot — used only on the student side after receiving FULL_STATE. */
@@ -1057,6 +1076,10 @@ public class WhiteboardPane extends StackPane {
         if (history.isEmpty()) return;
         BoardAction action = history.removeLast();
         redoStack.addLast(action);
+        // Guard: redoStack is implicitly bounded by the history cap (you cannot undo more
+        // actions than history holds), but the cap is made explicit here so that any future
+        // change to the history capacity does not silently leave redoStack unbounded.
+        if (redoStack.size() > 100) redoStack.removeFirst();
         isUndoRedo = true;
         try {
             switch (action.type) {
@@ -1136,8 +1159,8 @@ public class WhiteboardPane extends StackPane {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    private double getCanvasW()                { return whiteboardCanvas.getWidth(); }
-    private double getCanvasH()                { return whiteboardCanvas.getHeight(); }
+    public double getCanvasW()                 { return whiteboardCanvas.getWidth(); }
+    public double getCanvasH()                 { return whiteboardCanvas.getHeight(); }
     private GraphicsContext activeGc()         { return annotationMode ? annGc : wbGc; }
     private static String toHex(Color c) {
         return String.format("#%02X%02X%02X",
@@ -1161,10 +1184,16 @@ public class WhiteboardPane extends StackPane {
 
     public double getZoom() { return zoomLevel; }
     public void setZoom(double level) {
-        if (level < 0.2) level = 0.2;
-        if (level > 5.0) level = 5.0;
+        // Round to 1 decimal place to prevent floating-point drift (e.g. 0.999... or 0.7001...)
+        level = Math.round(level * 10.0) / 10.0;
+        if (level < 0.5) level = 0.5;
+        if (level > 3.0) level = 3.0;
         this.zoomLevel = level;
-        this.setScaleX(level); this.setScaleY(level);
+        // Use the pivot-(0,0) Scale transform instead of setScaleX/Y.
+        // setScaleX/Y pivots from node centre, pushing visual bounds into negative
+        // coordinates in the parent Group and breaking the centering StackPane layout.
+        scaleTransform.setX(level);
+        scaleTransform.setY(level);
     }
     
     public void setTransparentBackground(boolean transparent) {

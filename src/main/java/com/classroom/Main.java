@@ -10,8 +10,7 @@ public class Main extends Application {
     public void start(Stage primaryStage) {
         primaryStage.setTitle("Classroom Collaboration");
         primaryStage.setScene(new LoginScreen().buildScene(primaryStage));
-        primaryStage.setWidth(480);
-        primaryStage.setHeight(360);
+        primaryStage.setMaximized(true);
         primaryStage.show();
     }
 

@@ -5,19 +5,32 @@ import com.classroom.model.MessageType;
 import com.classroom.util.NetworkUtil;
 import javafx.application.Platform;
 import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.net.BindException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 public class TeacherServer {
+
+    // ── Configurable capacity constants ───────────────────────────────────────
+    /**
+     * Maximum number of concurrent ClientHandler threads.
+     * Set slightly above the expected max class size so a burst of simultaneous
+     * reconnects is absorbed by the pool queue rather than spawning unlimited threads.
+     */
+    public static final int MAX_HANDLER_THREADS = 60;
 
     private final int port;
     private ServerSocket serverSocket;
@@ -34,6 +47,21 @@ public class TeacherServer {
     private final ConcurrentHashMap<String, AtomicReference<Message>> latestProgressMap = new ConcurrentHashMap<>();
     private Thread dispatchThread;
     private Thread heartbeatThread;
+
+    /**
+     * Bounded thread pool for ClientHandler instances.
+     * Capped at MAX_HANDLER_THREADS to prevent unbounded thread creation on repeated
+     * or rapid reconnections. All threads are daemon threads so they do not prevent
+     * JVM shutdown when the teacher closes the session.
+     */
+    private final ExecutorService handlerPool = Executors.newFixedThreadPool(
+        MAX_HANDLER_THREADS,
+        r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        }
+    );
 
     public TeacherServer(int port, Runnable onClientListChanged) {
         this.port = port;
@@ -72,14 +100,15 @@ public class TeacherServer {
         }
         running = true;
         Thread acceptThread = new Thread(() -> {
-            System.out.println("[TeacherServer] Listening on port " + port);
+            System.out.println("[TeacherServer] Listening on port " + port
+                    + " (max clients: " + MAX_HANDLER_THREADS + ")");
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
-                    ClientHandler handler = new ClientHandler(clientSocket, this);
-                    Thread t = new Thread(handler);
-                    t.setDaemon(true);
-                    t.start();
+                    // Submit to the bounded pool — replaces raw Thread spawning.
+                    // If the pool is at capacity the new Runnable queues internally;
+                    // it does NOT block this accept-loop thread.
+                    handlerPool.submit(new ClientHandler(clientSocket, this));
                 } catch (IOException e) {
                     if (running) {
                         System.err.println("[TeacherServer] Accept error: " + e.getMessage());
@@ -94,9 +123,20 @@ public class TeacherServer {
             while (running || !dispatchQueue.isEmpty()) {
                 // Priority 1: drain all pending latest-value progress messages first.
                 // This ensures in-progress strokes and shape drags are never stale.
-                for (AtomicReference<Message> ref : latestProgressMap.values()) {
-                    Message m = ref.getAndSet(null);
-                    if (m != null) doSendAll(m);
+                // Iterator-based traversal allows pruning entries whose AtomicReference
+                // is permanently null (left over from completed shape drags). Without
+                // pruning, these dead entries accumulate over a long session.
+                Iterator<Map.Entry<String, AtomicReference<Message>>> it =
+                        latestProgressMap.entrySet().iterator();
+                while (it.hasNext()) {
+                    Map.Entry<String, AtomicReference<Message>> entry = it.next();
+                    Message m = entry.getValue().getAndSet(null);
+                    if (m != null) {
+                        doSendAll(m);
+                    } else {
+                        // Entry has been null since the last drain cycle — prune it.
+                        it.remove();
+                    }
                 }
                 // Priority 2: send one regular queued message, waiting up to 5ms if queue is empty.
                 try {
@@ -151,15 +191,26 @@ public class TeacherServer {
     }
 
     /**
-     * Sends a message to all connected clients synchronously.
+     * Sends a message to all connected clients.
+     * Each client's OOS is locked individually (synchronized on the OOS object) so
+     * this can run safely in parallel with ClientHandler.send() which locks the same
+     * object. Without this, addClient()'s state-snapshot sends and the dispatch thread's
+     * doSendAll() would race on the same ObjectOutputStream, corrupting the stream and
+     * causing the student to see an unexpected disconnect.
      * Called only from the dispatch thread — never from the FX thread.
      */
     private void doSendAll(Message msg) {
-        List<ClientHandler> failed = new ArrayList<>();
+        List<ClientHandler> snapshot;
         synchronized (clients) {
-            for (ClientHandler client : clients) {
+            snapshot = new ArrayList<>(clients);
+        }
+        List<ClientHandler> failed = new ArrayList<>();
+        for (ClientHandler client : snapshot) {
+            ObjectOutputStream oos = client.getOutputStream();
+            if (oos == null) continue;
+            synchronized (oos) {
                 try {
-                    NetworkUtil.sendMessage(client.getOutputStream(), msg);
+                    NetworkUtil.sendMessage(oos, msg);
                 } catch (Exception e) {
                     System.err.println("[TeacherServer] Send failed for "
                             + client.getStudentName() + ": " + e.getMessage());
@@ -168,7 +219,7 @@ public class TeacherServer {
             }
         }
         if (!failed.isEmpty()) {
-            clients.removeAll(failed);
+            synchronized (clients) { clients.removeAll(failed); }
             Platform.runLater(onClientListChanged);
         }
     }

@@ -65,12 +65,21 @@ public class ClientHandler implements Runnable {
 
     /**
      * Sends a message to this specific student.
+     * Synchronized on 'out' to prevent concurrent writes from multiple callers:
+     *   - The ClientHandler pool thread calls send() during addClient() state sync.
+     *   - The dispatch thread calls doSendAll() → NetworkUtil.sendMessage(getOutputStream())
+     *     using synchronized(oos) on the same object.
+     * Without this lock the two threads would interleave bytes in the OOS, causing
+     * StreamCorruptedException on the student side → readMessage() returns null → disconnect.
      */
     public void send(Message msg) {
-        try {
-            NetworkUtil.sendMessage(out, msg);
-        } catch (Exception e) {
-            System.err.println("[ClientHandler] send error for " + studentName + ": " + e.getMessage());
+        if (out == null) return;
+        synchronized (out) {
+            try {
+                NetworkUtil.sendMessage(out, msg);
+            } catch (Exception e) {
+                System.err.println("[ClientHandler] send error for " + studentName + ": " + e.getMessage());
+            }
         }
     }
 

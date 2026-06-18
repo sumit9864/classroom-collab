@@ -30,5 +30,8 @@ public enum MessageType {
     // Phase 5 — File Sharing
     FILE_SHARE_START,    // Teacher → All Students: FileShareData metadata (fileName, size, totalChunks)
     FILE_CHUNK,          // Teacher → All Students: FileShareData with one chunk of file bytes
-    FILE_SHARE_COMPLETE  // Teacher → All Students: FileShareData signals transfer finished
+    FILE_SHARE_COMPLETE, // Teacher → All Students: FileShareData signals transfer finished
+
+    // Phase 6 — Tab Sync
+    TAB_SWITCH           // Teacher → All Students: Integer index of the currently active tab (or -1 to unlock)
 }
