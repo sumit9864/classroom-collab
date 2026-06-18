@@ -383,15 +383,22 @@ public class TeacherUI {
         undoBtn.setOnAction(e -> {
             WhiteboardPane pane = getActivePane();
             if (pane == null) return;
-            pane.undo();
-            if (server != null) server.broadcast(new Message(MessageType.UNDO, null, getActiveSender()));
+            WhiteboardPane.FullState afterUndo = pane.undo();
+            // Only broadcast if there was actually something to undo.
+            // Payload is the full post-undo board state so students can apply it
+            // directly via applyFullState() — no local history replay on student side.
+            if (afterUndo != null && server != null) {
+                server.broadcast(new Message(MessageType.UNDO, afterUndo, getActiveSender()));
+            }
         });
         Button redoBtn = new Button("Redo");
         redoBtn.setOnAction(e -> {
             WhiteboardPane pane = getActivePane();
             if (pane == null) return;
-            pane.redo();
-            if (server != null) server.broadcast(new Message(MessageType.REDO, null, getActiveSender()));
+            WhiteboardPane.FullState afterRedo = pane.redo();
+            if (afterRedo != null && server != null) {
+                server.broadcast(new Message(MessageType.REDO, afterRedo, getActiveSender()));
+            }
         });
         Button clearBoard = new Button("Clear Board");
         clearBoard.getStyleClass().add("btn-subtle");

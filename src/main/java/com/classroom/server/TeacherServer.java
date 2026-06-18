@@ -138,9 +138,12 @@ public class TeacherServer {
                         it.remove();
                     }
                 }
-                // Priority 2: send one regular queued message, waiting up to 5ms if queue is empty.
+                // Priority 2: drain one regular queued message, waiting up to 1 ms if queue is
+                // empty. 1 ms keeps the loop responsive during active drawing (5 ms caused
+                // up to 5 ms idle jitter between progress-message cycles) while still yielding
+                // the CPU when the board is idle.
                 try {
-                    Message msg = dispatchQueue.poll(5, TimeUnit.MILLISECONDS);
+                    Message msg = dispatchQueue.poll(1, TimeUnit.MILLISECONDS);
                     if (msg != null) doSendAll(msg);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();

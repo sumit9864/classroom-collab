@@ -12,8 +12,8 @@ public enum MessageType {
     WHITEBOARD_CLEAR,    // Teacher → All Students: null payload, clear whiteboard canvas
     ANNOTATION_STROKE,   // Teacher → All Students: StrokeData payload for annotation layer
     ANNOTATION_CLEAR,    // Teacher → All Students: null payload, clear annotation canvas
-    UNDO,                // Teacher → All Students: null payload, undo last action
-    REDO,                // Teacher → All Students: null payload, redo last undone action
+    UNDO,                // Teacher → All Students: WhiteboardPane.FullState payload — post-undo board state
+    REDO,                // Teacher → All Students: WhiteboardPane.FullState payload — post-redo board state
     CANVAS_RESIZE,       // Teacher → All Students: double[] {w, h} payload, resize canvas
     SHAPE_ADD,           // Teacher → All Students: ShapeData payload, new shape placed
     SHAPE_UPDATE,        // Teacher → All Students: ShapeData payload, shape moved/resized

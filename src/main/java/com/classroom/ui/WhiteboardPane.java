@@ -141,7 +141,14 @@ public class WhiteboardPane extends StackPane {
     // nanoTime() is a monotonic, high-resolution counter with nanosecond resolution
     // that is not subject to system-time adjustments.
     private long lastStrokeProgressNs = 0L;
-    private static final long STROKE_PROGRESS_INTERVAL_NS = 16_000_000L; // 16 ms in nanoseconds
+    private static final long STROKE_PROGRESS_INTERVAL_NS = 16_000_000L; // 16 ms ≈ 60 fps
+
+    // Index into currentPoints of the first point NOT yet sent in a STROKE_PROGRESS message.
+    // Reset to 0 on mousePressed. Advanced to currentPoints.size() after each progress send.
+    // This allows each STROKE_PROGRESS to carry only the NEW delta points, keeping the
+    // payload constant-sized (≈1–3 points) regardless of how long the stroke has been
+    // in progress — preventing quadratic serialization growth that causes lag after ~1s.
+    private int lastProgressPointIndex = 0;
 
     // Throttle SHAPE_UPDATE-during-drag to ~60fps (same rationale as STROKE_PROGRESS above)
     private long lastShapeDragNs = 0L;
@@ -206,6 +213,7 @@ public class WhiteboardPane extends StackPane {
             double cw = getCanvasW(), ch = getCanvasH();
             if (cw == 0 || ch == 0) return;
             currentPoints.clear();
+            lastProgressPointIndex = 0;  // reset delta index on every new stroke
             double px = e.getX(), py = e.getY();
             currentPoints.add(new double[]{px, py});   // absolute pixels
             lastX = px; lastY = py;
@@ -246,18 +254,33 @@ public class WhiteboardPane extends StackPane {
                 gc.lineTo(px, py); gc.stroke(); gc.beginPath(); gc.moveTo(px, py);
             }
             lastX = px; lastY = py;
-            // Fire STROKE_PROGRESS callback — throttled to STROKE_PROGRESS_INTERVAL_MS
+            // Fire STROKE_PROGRESS callback — throttled to ~60fps.
+            // Sends only the NEW delta points since the last progress message so that
+            // payload size stays constant (≈1–3 points) no matter how long the stroke is.
             if (onStrokeProgress != null) {
                 long now = System.nanoTime();
                 if (now - lastStrokeProgressNs >= STROKE_PROGRESS_INTERVAL_NS) {
                     lastStrokeProgressNs = now;
-                    StrokeData progressStroke = new StrokeData(
-                        new ArrayList<>(currentPoints),
-                        drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
-                        strokeWidth,   // absolute pixels — canvas size is sync'd network-wide
-                        annotationMode
-                    );
-                    onStrokeProgress.accept(progressStroke);
+                    // Include the last already-sent point as index 0 of the delta so the
+                    // student's drawOnGc() does moveTo(anchor) → lineTo(new points...).
+                    // Without this one-point overlap every delta starts with a fresh moveTo()
+                    // at the new position, leaving a visible gap and producing the dotted
+                    // broken-stroke artifact. Cost: exactly 1 extra point per message.
+                    int fromIndex = (lastProgressPointIndex > 0)
+                            ? lastProgressPointIndex - 1   // one-point overlap for continuity
+                            : 0;
+                    List<double[]> delta = new ArrayList<>(
+                            currentPoints.subList(fromIndex, currentPoints.size()));
+                    lastProgressPointIndex = currentPoints.size();
+                    if (delta.size() >= 2) {   // need at least anchor + 1 new point to draw
+                        StrokeData progressStroke = new StrokeData(
+                            delta,
+                            drawMode == DrawMode.ERASER ? "#00000000" : toHex(currentColor),
+                            strokeWidth,
+                            annotationMode
+                        );
+                        onStrokeProgress.accept(progressStroke);
+                    }
                 }
             }
         });
@@ -946,7 +969,16 @@ public class WhiteboardPane extends StackPane {
     }
 
     // ── History & Undo/Redo API ───────────────────────────────────────────────
+    /**
+     * Records an action into the undo history.
+     * NO-OP on non-teacher boards (student-side WhiteboardPane instances have
+     * teacherMode=false). Student boards must never build their own local history
+     * because the teacher drives all undo/redo and sends the authoritative
+     * post-operation FullState. Building student-local history would cause the
+     * student's undo() calls to diverge from the teacher's state.
+     */
     public void recordAction(BoardAction action) {
+        if (!teacherMode) return;   // ← student boards never record history
         if (isUndoRedo) return;
         history.addLast(action);
         if (history.size() > 100) history.removeFirst();
@@ -987,13 +1019,15 @@ public class WhiteboardPane extends StackPane {
     }
 
     /**
-     * Renders an in-progress stroke from the teacher onto the temporary overlay canvas.
-     * Does NOT add anything to history. The overlay is cleared when the final stroke arrives.
+     * Renders an in-progress stroke delta from the teacher onto the temporary overlay canvas.
+     * Draws ONLY the new delta segment — does NOT clear the overlay first. The overlay
+     * accumulates segments until clearStrokeProgress() is called (on final stroke commit).
+     * This makes per-frame render cost O(delta points) instead of O(all points), eliminating
+     * the quadratic redraw growth that caused student-side lag during long strokes.
      * Called only on the student side.
      */
-    public void applyStrokeProgress(StrokeData stroke) {
-        progressGc.clearRect(0, 0, progressOverlayCanvas.getWidth(), progressOverlayCanvas.getHeight());
-        drawOnGc(progressGc, stroke);
+    public void applyStrokeProgress(StrokeData delta) {
+        drawOnGc(progressGc, delta);
     }
 
     /**
@@ -1072,13 +1106,16 @@ public class WhiteboardPane extends StackPane {
         toRemove.forEach(this::silentRemoveShape);
     }
 
-    public void undo() {
-        if (history.isEmpty()) return;
+    /**
+     * Performs one undo on the teacher's board and returns the resulting FullState
+     * for broadcast to students. Returns null if history is empty (nothing to undo).
+     * MUST only be called on teacher-side boards (teacherMode=true).
+     */
+    public FullState undo() {
+        if (history.isEmpty()) return null;
         BoardAction action = history.removeLast();
         redoStack.addLast(action);
-        // Guard: redoStack is implicitly bounded by the history cap (you cannot undo more
-        // actions than history holds), but the cap is made explicit here so that any future
-        // change to the history capacity does not silently leave redoStack unbounded.
+        // Cap: cannot exceed the history limit (you can't undo more than you recorded).
         if (redoStack.size() > 100) redoStack.removeFirst();
         isUndoRedo = true;
         try {
@@ -1091,12 +1128,19 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
+        return getFullState();
     }
 
-    public void redo() {
-        if (redoStack.isEmpty()) return;
+    /**
+     * Performs one redo on the teacher's board and returns the resulting FullState
+     * for broadcast to students. Returns null if redoStack is empty (nothing to redo).
+     * MUST only be called on teacher-side boards (teacherMode=true).
+     */
+    public FullState redo() {
+        if (redoStack.isEmpty()) return null;
         BoardAction action = redoStack.removeLast();
         history.addLast(action);
+        if (history.size() > 100) history.removeFirst();
         isUndoRedo = true;
         try {
             switch (action.type) {
@@ -1108,6 +1152,7 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
+        return getFullState();
     }
 
     private void silentRemoveShape(String id) {

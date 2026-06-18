@@ -719,9 +719,13 @@ public class StudentUI {
             case ANNOTATION_CLEAR:
                 if (targetPane != null) targetPane.clearAnnotations(); break;
             case UNDO:
-                if (targetPane != null) targetPane.undo(); break;
             case REDO:
-                if (targetPane != null) targetPane.redo(); break;
+                // Payload is the authoritative post-undo/redo FullState from the teacher.
+                // Apply it directly — the student has no local history to replay.
+                if (targetPane != null) {
+                    targetPane.applyFullState((WhiteboardPane.FullState) msg.getPayload());
+                }
+                break;
             case CANVAS_RESIZE:
                 if (targetPane != null) {
                     double[] size = (double[]) msg.getPayload();
