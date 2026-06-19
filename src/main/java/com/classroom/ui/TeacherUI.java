@@ -896,10 +896,11 @@ public class TeacherUI {
      * Reads the file in 256 KB chunks on a background thread and enqueues
      * FILE_SHARE_START → FILE_CHUNK × N → FILE_SHARE_COMPLETE messages.
      *
-     * server.broadcast() calls LinkedBlockingQueue.offer() which is thread-safe,
-     * so calling it from this background thread is safe.
-     *
-     * Platform.runLater() is used for all UI updates (progress bar, status label).
+     * FILE_SHARE_START and FILE_SHARE_COMPLETE use server.broadcast() (high-priority queue).
+     * FILE_CHUNK uses server.broadcastFileChunk() (low-priority, BLOCKING queue) so the
+     * sender thread stalls on disk reads when the file chunk queue fills, preventing OOM
+     * during concurrent large-file transfers. This is safe here because this method always
+     * runs on a background thread, never the FX thread.
      */
     private void sendFileAsync(File file) {
         String transferId = UUID.randomUUID().toString();
@@ -942,11 +943,11 @@ public class TeacherUI {
         // ── Background sender thread ───────────────────────────────────────
         final int finalTotalChunks = totalChunks;
         Thread sender = new Thread(() -> {
-            // 1. Broadcast FILE_SHARE_START (metadata)
+            // 1. Broadcast FILE_SHARE_START (metadata) — high-priority queue
             FileShareData startMeta = FileShareData.start(transferId, fileName, fileSize, finalTotalChunks);
             server.broadcast(new Message(MessageType.FILE_SHARE_START, startMeta, "Teacher"));
 
-            // 2. Read and broadcast chunks
+            // 2. Read and broadcast chunks — low-priority blocking queue
             byte[] buf = new byte[CHUNK_SIZE];
             int chunkIndex = 0;
             boolean errorOccurred = false;
@@ -960,7 +961,15 @@ public class TeacherUI {
 
                     FileShareData chunk = FileShareData.chunk(
                             transferId, fileName, fileSize, finalTotalChunks, chunkIndex, chunkBytes);
-                    server.broadcast(new Message(MessageType.FILE_CHUNK, chunk, "Teacher"));
+                    // BLOCKING put — stalls this thread if the file chunk queue is full,
+                    // providing backpressure without dropping chunks.
+                    try {
+                        server.broadcastFileChunk(new Message(MessageType.FILE_CHUNK, chunk, "Teacher"));
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        errorOccurred = true;
+                        break;
+                    }
 
                     chunkIndex++;
                     final double progress = (double) chunkIndex / finalTotalChunks;
@@ -977,7 +986,7 @@ public class TeacherUI {
                 });
             }
 
-            // 3. Broadcast FILE_SHARE_COMPLETE (even on error so students clean up)
+            // 3. Broadcast FILE_SHARE_COMPLETE (high-priority queue, even on error so students clean up)
             FileShareData complete = FileShareData.complete(transferId, fileName, fileSize);
             server.broadcast(new Message(MessageType.FILE_SHARE_COMPLETE, complete, "Teacher"));
 
@@ -1015,13 +1024,8 @@ public class TeacherUI {
         if (pptService == null || !pptService.isLoaded()) return;
         int idx = pptService.getCurrentIndex();
         WhiteboardPane.FullState state = pptWhiteboardPane.getFullState();
-        List<StrokeData> strokes = state.strokes.stream()
-                .filter(s -> !s.isAnnotation())
-                .collect(Collectors.toList());
-        List<ShapeData> shapes = new ArrayList<>(pptWhiteboardPane.getShapeDataMap().values())
-                .stream()
-                .filter(sd -> !sd.isAnnotation())
-                .collect(Collectors.toList());
+        List<StrokeData> strokes = new ArrayList<>(state.strokes);
+        List<ShapeData> shapes = new ArrayList<>(pptWhiteboardPane.getShapeDataMap().values());
         if (!strokes.isEmpty() || !shapes.isEmpty()) {
             slideMarkingsMap.put(idx, new SavedSlideMarkings(strokes, shapes));
         } else {

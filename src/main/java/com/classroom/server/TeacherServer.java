@@ -32,6 +32,24 @@ public class TeacherServer {
      */
     public static final int MAX_HANDLER_THREADS = 60;
 
+    /**
+     * Capacity of the high-priority general dispatch queue.
+     * Covers all non-file messages: strokes, shapes, code, PPT nav, heartbeat, undo/redo.
+     * 300 messages at ~1 KB average = ~300 KB peak queue RAM — negligible.
+     * If the queue fills (e.g., extremely rapid code updates with 0 students reading),
+     * broadcast() silently drops the message (offer() returns false) rather than OOM.
+     */
+    public static final int MAX_DISPATCH_QUEUE = 300;
+
+    /**
+     * Capacity of the low-priority file chunk queue.
+     * Each FILE_CHUNK message carries a 256 KB byte[]. At 200 capacity: max 50 MB of
+     * pending heap during large concurrent transfers. sendFileAsync() uses the BLOCKING
+     * broadcastFileChunk() so file sender threads stall when this fills — preventing
+     * the heap explosion that an unbounded queue causes with 5 concurrent large files.
+     */
+    public static final int MAX_FILE_CHUNK_QUEUE = 200;
+
     private final int port;
     private ServerSocket serverSocket;
     private final List<ClientHandler> clients;  // synchronized list
@@ -43,8 +61,37 @@ public class TeacherServer {
     private Supplier<Message> codeStateSupplier;  // provides last shared CodeData for late-join
 
     // Async broadcast infrastructure
-    private final LinkedBlockingQueue<Message> dispatchQueue = new LinkedBlockingQueue<>();
-    private final ConcurrentHashMap<String, AtomicReference<Message>> latestProgressMap = new ConcurrentHashMap<>();
+    /**
+     * HIGH priority queue: all non-file messages (strokes, shapes, code, PPT, tab sync,
+     * heartbeat, undo/redo). Bounded to prevent OOM from runaway producers.
+     * broadcast() uses non-blocking offer() — drops silently if full (extremely rare).
+     */
+    private final LinkedBlockingQueue<Message> dispatchQueue =
+            new LinkedBlockingQueue<>(MAX_DISPATCH_QUEUE);
+
+    /**
+     * LOW priority queue: FILE_SHARE_START, FILE_CHUNK, FILE_SHARE_COMPLETE only.
+     * Bounded — broadcastFileChunk() BLOCKS the file sender thread when full,
+     * providing backpressure that prevents heap explosion during large concurrent transfers.
+     * Drained one message per dispatch loop cycle after the high-priority queue is empty.
+     */
+    private final LinkedBlockingQueue<Message> fileChunkQueue =
+            new LinkedBlockingQueue<>(MAX_FILE_CHUNK_QUEUE);
+
+    /**
+     * Semaphore used to wake the dispatch thread immediately when a new message
+     * is enqueued in any of the three queues (latestProgressMap, dispatchQueue,
+     * fileChunkQueue). Each enqueue releases one permit; the dispatch thread acquires
+     * one permit per loop iteration. This replaces the old poll(1ms) busy-loop:
+     * - Zero CPU spin when queues are empty.
+     * - Sub-millisecond wake latency instead of up to 1ms polling jitter.
+     */
+    private final java.util.concurrent.Semaphore dispatchSignal =
+            new java.util.concurrent.Semaphore(0);
+
+    private final ConcurrentHashMap<String, AtomicReference<Message>> latestProgressMap =
+            new ConcurrentHashMap<>();
+
     private Thread dispatchThread;
     private Thread heartbeatThread;
 
@@ -120,12 +167,19 @@ public class TeacherServer {
         acceptThread.start();
 
         dispatchThread = new Thread(() -> {
-            while (running || !dispatchQueue.isEmpty()) {
-                // Priority 1: drain all pending latest-value progress messages first.
-                // This ensures in-progress strokes and shape drags are never stale.
-                // Iterator-based traversal allows pruning entries whose AtomicReference
-                // is permanently null (left over from completed shape drags). Without
-                // pruning, these dead entries accumulate over a long session.
+            while (running || !dispatchQueue.isEmpty() || !fileChunkQueue.isEmpty()) {
+                // Wait for a signal that something was enqueued (sub-ms wake latency).
+                // tryAcquire drains any permits released while we were working, then
+                // blocks up to 5ms so we don't spin 100% CPU when queues are empty.
+                try {
+                    dispatchSignal.tryAcquire(5, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+
+                // Priority 1: drain all pending latest-value progress messages.
+                // These are always high-priority (stroke/shape drag previews).
                 Iterator<Map.Entry<String, AtomicReference<Message>>> it =
                         latestProgressMap.entrySet().iterator();
                 while (it.hasNext()) {
@@ -134,21 +188,24 @@ public class TeacherServer {
                     if (m != null) {
                         doSendAll(m);
                     } else {
-                        // Entry has been null since the last drain cycle — prune it.
-                        it.remove();
+                        it.remove(); // prune permanently-empty entries
                     }
                 }
-                // Priority 2: drain one regular queued message, waiting up to 1 ms if queue is
-                // empty. 1 ms keeps the loop responsive during active drawing (5 ms caused
-                // up to 5 ms idle jitter between progress-message cycles) while still yielding
-                // the CPU when the board is idle.
-                try {
-                    Message msg = dispatchQueue.poll(1, TimeUnit.MILLISECONDS);
-                    if (msg != null) doSendAll(msg);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
+
+                // Priority 2: drain all pending high-priority general messages.
+                // poll() is non-blocking so we empty the queue in one pass without
+                // blocking on an empty queue; control falls to Priority 3 immediately.
+                Message msg;
+                while ((msg = dispatchQueue.poll()) != null) {
+                    doSendAll(msg);
                 }
+
+                // Priority 3: send ONE file chunk (low priority).
+                // Sending one per loop cycle interleaves file chunks with whiteboard
+                // messages so stroke/shape updates are never fully starved by a
+                // large file transfer.
+                Message chunk = fileChunkQueue.poll();
+                if (chunk != null) doSendAll(chunk);
             }
         });
         dispatchThread.setDaemon(true);
@@ -229,16 +286,34 @@ public class TeacherServer {
 
     /**
      * Enqueues a message for async broadcast to all students.
-     * Non-blocking — safe to call from the JavaFX Application Thread.
+     * Non-blocking (offer) — safe to call from the JavaFX Application Thread.
+     * Releases the dispatch semaphore so the dispatch thread wakes immediately.
      */
     public void broadcast(Message msg) {
         dispatchQueue.offer(msg);
+        dispatchSignal.release();
+    }
+
+    /**
+     * Enqueues a FILE_SHARE_START, FILE_CHUNK, or FILE_SHARE_COMPLETE message into
+     * the low-priority file chunk queue. BLOCKS the calling thread if the queue is
+     * full (capacity = MAX_FILE_CHUNK_QUEUE). This provides backpressure so file
+     * sender threads pause disk reads rather than flooding heap with pending chunks.
+     *
+     * Must NOT be called from the FX thread — only from file sender background threads.
+     *
+     * @throws InterruptedException if the sender thread is interrupted while waiting.
+     */
+    public void broadcastFileChunk(Message msg) throws InterruptedException {
+        fileChunkQueue.put(msg); // blocks when queue is full
+        dispatchSignal.release();
     }
 
     /**
      * Enqueues a message using a latest-value pattern.
      * If a pending message with the same key already exists, it is atomically replaced.
      * Non-blocking — safe to call from the JavaFX Application Thread.
+     * Releases the dispatch semaphore so the dispatch thread wakes immediately.
      *
      * @param key A string key identifying the slot (e.g. "STROKE_PROGRESS_Teacher").
      * @param msg The message to send.
@@ -247,6 +322,7 @@ public class TeacherServer {
         latestProgressMap
             .computeIfAbsent(key, k -> new AtomicReference<>())
             .set(msg);
+        dispatchSignal.release();
     }
 
     /**

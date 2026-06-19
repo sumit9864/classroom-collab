@@ -25,6 +25,14 @@ public class PptService {
 
     private static final int TARGET_WIDTH = 1920; // render width in pixels (Full HD)
 
+    /**
+     * Maximum number of slides this service will render in a single session.
+     * At 1920px wide, a heavy slide renders to ~2 MB of PNG bytes; 200 slides = ~400 MB worst case.
+     * The SoftReference window (Phase 3 Fix D) will lower this further, but this hard cap
+     * prevents OutOfMemoryError for pathological decks before that is in place.
+     */
+    public static final int MAX_RENDERABLE_SLIDES = 200;
+
     private byte[][] renderedSlides;  // one PNG byte[] per slide, null until loaded
     private int currentIndex  = 0;
     private int totalSlides   = 0;
@@ -52,6 +60,15 @@ public class PptService {
                 if (slides.isEmpty()) {
                     javafx.application.Platform.runLater(() ->
                         onError.accept("The selected file contains no slides."));
+                    return;
+                }
+
+                // Guard: reject decks that exceed the renderable limit before touching heap
+                if (slides.size() > MAX_RENDERABLE_SLIDES) {
+                    final int count = slides.size();
+                    javafx.application.Platform.runLater(() -> onError.accept(
+                        "This presentation has " + count + " slides. Maximum supported is "
+                        + MAX_RENDERABLE_SLIDES + ". Please split the deck into smaller parts."));
                     return;
                 }
 

@@ -9,6 +9,7 @@ import com.classroom.model.SlideData;
 import com.classroom.model.StrokeData;
 import com.classroom.ui.WhiteboardPane.FullState;
 
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
@@ -32,6 +33,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import javafx.animation.PauseTransition;
@@ -105,8 +109,12 @@ public class StudentUI {
 
     /**
      * Tracks an in-progress file transfer on the student side.
-     * All fields are accessed only on the FX thread (handleMessage is
-     * dispatched via Platform.runLater in StudentClient).
+     *
+     * {@code writeExecutor} is a single-thread ExecutorService that owns all disk I/O
+     * for this transfer. It is the only thread that ever calls {@code fos.write()}.
+     * The FX thread only reads {@code entry.failed} and updates JavaFX nodes — never
+     * touches the FileOutputStream. This eliminates FX frame drops caused by
+     * disk writes blocking the render pulse (worst case ~10ms per chunk on HDDs).
      */
     private static final class FileReceiveEntry {
         final String fileName;       // original name — used by ZIP feature
@@ -114,10 +122,11 @@ public class StudentUI {
         int     receivedChunks = 0;
         File    tempFile;
         FileOutputStream fos;
+        ExecutorService  writeExecutor; // single-thread; owns all fos.write() calls
         ProgressBar progressBar;
         Label       statusLabel;
         Button      saveButton;
-        boolean     failed = false;
+        volatile boolean failed = false; // written by writeExecutor, read by FX thread
 
         FileReceiveEntry(String fileName, int totalChunks) {
             this.fileName    = fileName;
@@ -502,6 +511,14 @@ public class StudentUI {
         entry.statusLabel = statusLbl;
         entry.saveButton  = saveBtn;
 
+        // Create the single-thread write executor before opening the stream,
+        // so handleFileChunk can safely submit to it even if fos creation fails.
+        entry.writeExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "file-write-" + transferId.substring(0, 8));
+            t.setDaemon(true);
+            return t;
+        });
+
         // Try to create temp file
         try {
             // Use a safe prefix — strip any path separators from fileName
@@ -522,57 +539,79 @@ public class StudentUI {
     }
 
     /**
-     * Called when FILE_CHUNK arrives.
-     * Writes the chunk bytes to the temp file. On error, marks entry as failed.
-     * Called on the FX thread — FileOutputStream writes are fast for 256 KB chunks
-     * on modern hardware and do not cause noticeable jank on LAN.
+     * Called when FILE_CHUNK arrives (on the FX thread).
+     * Updates the progress bar immediately, then submits the disk write to the
+     * per-transfer writeExecutor. The FX thread never blocks on I/O.
+     * On write error, sets {@code entry.failed = true} (volatile) and updates
+     * the UI via Platform.runLater so the FX thread sees the change safely.
      */
     private void handleFileChunk(FileShareData data) {
         FileReceiveEntry entry = pendingFiles.get(data.getTransferId());
-        if (entry == null || entry.failed) return; // no START received or already failed
+        if (entry == null || entry.failed) return;
 
         byte[] chunkData = data.getChunkData();
-        if (chunkData == null || chunkData.length == 0) return; // malformed chunk, skip
+        if (chunkData == null || chunkData.length == 0) return;
 
-        try {
-            entry.fos.write(chunkData);
-            entry.receivedChunks++;
-            int total = data.getTotalChunks() > 0 ? data.getTotalChunks() : entry.totalChunks;
-            double progress = total > 0 ? (double) entry.receivedChunks / total : 0;
-            entry.progressBar.setProgress(Math.min(progress, 1.0));
-        } catch (IOException ex) {
-            entry.failed = true;
-            entry.statusLabel.setText("\u2717 Write error: " + ex.getMessage());
-            entry.statusLabel.getStyleClass().setAll("text-error");
-            closeFos(entry);
-        }
+        // Count and update progress bar on FX thread (non-blocking)
+        entry.receivedChunks++;
+        int total = data.getTotalChunks() > 0 ? data.getTotalChunks() : entry.totalChunks;
+        double progress = total > 0 ? (double) entry.receivedChunks / total : 0;
+        entry.progressBar.setProgress(Math.min(progress, 1.0));
+
+        // Offload disk write to the per-transfer executor (never blocks FX thread)
+        entry.writeExecutor.submit(() -> {
+            if (entry.failed || entry.fos == null) return;
+            try {
+                entry.fos.write(chunkData);
+            } catch (IOException ex) {
+                entry.failed = true; // volatile write — FX thread reads this safely
+                Platform.runLater(() -> { // Rule 1 — JavaFX nodes updated on FX thread
+                    entry.statusLabel.setText("\u2717 Write error: " + ex.getMessage());
+                    entry.statusLabel.getStyleClass().setAll("text-error");
+                    closeFos(entry);
+                });
+            }
+        });
     }
 
     /**
-     * Called when FILE_SHARE_COMPLETE arrives.
-     * Closes the FileOutputStream and either shows the Save button or an error label.
+     * Called when FILE_SHARE_COMPLETE arrives (on FX thread).
+     * Shuts down the writeExecutor and waits for pending writes to drain on a
+     * background thread so the FX thread is never blocked. Once the executor
+     * terminates, closes the fos and updates the UI via Platform.runLater.
      */
     private void handleFileComplete(FileShareData data) {
         FileReceiveEntry entry = pendingFiles.remove(data.getTransferId());
-        if (entry == null) return; // no matching START — ignore
+        if (entry == null) return;
 
-        closeFos(entry); // safe to call even if already closed
+        // Immediately set progress bar to 1.0 so the student sees 100% promptly
+        if (!entry.failed) entry.progressBar.setProgress(1.0);
 
-        if (entry.failed) {
-            entry.progressBar.setProgress(0);
-            // statusLabel already set by handleFileChunk's error handler
-            return;
-        }
-
-        entry.progressBar.setProgress(1.0);
-        entry.statusLabel.setText("\u2713 Ready to save");
-        entry.statusLabel.getStyleClass().setAll("text-success-bold");
-        entry.saveButton.setVisible(true);
-        entry.saveButton.setManaged(true);
-
-        // Register in completed list and enable the Download All button
-        completedFiles.add(entry);
-        if (downloadAllBtn != null) downloadAllBtn.setDisable(false);
+        // Shut down the write executor and finish teardown off-thread so we
+        // do not block the FX thread waiting for pending writes to flush.
+        entry.writeExecutor.shutdown();
+        new Thread(() -> {
+            try {
+                // Wait up to 30s for any in-flight writes to complete
+                entry.writeExecutor.awaitTermination(30, TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            closeFos(entry);
+            Platform.runLater(() -> { // Rule 1 — all node updates on FX thread
+                if (entry.failed) {
+                    entry.progressBar.setProgress(0);
+                    // statusLabel text already set by the write-error handler
+                } else {
+                    entry.statusLabel.setText("\u2713 Ready to save");
+                    entry.statusLabel.getStyleClass().setAll("text-success-bold");
+                    entry.saveButton.setVisible(true);
+                    entry.saveButton.setManaged(true);
+                    completedFiles.add(entry);
+                    if (downloadAllBtn != null) downloadAllBtn.setDisable(false);
+                }
+            });
+        }, "file-complete-" + data.getTransferId().substring(0, 8)).start();
     }
 
     /**
