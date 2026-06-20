@@ -4,10 +4,16 @@ target/
 # IDE files
 .idea/
 *.iml
+*.iws
+out/
 .vscode/
 .classpath
 .project
 .settings/
+
+# Editor/backup files
+*.bak
+*~
 
 # OS junk
 .DS_Store
