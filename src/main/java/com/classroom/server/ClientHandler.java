@@ -7,8 +7,19 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public class ClientHandler implements Runnable {
+
+    /**
+     * Capacity of the per-client outbound send queue.
+     * Each message is typically 1–256 KB. At 200 capacity this is ~50 MB worst case
+     * per client (for file chunks). If a slow client cannot drain its queue fast enough,
+     * offer() returns false and the dispatch thread marks the client for disconnection.
+     * This prevents a single slow student from stalling all other students (head-of-line
+     * blocking) — the core motivation for Fix B.
+     */
+    public static final int SEND_QUEUE_CAPACITY = 200;
 
     private final Socket socket;
     private final TeacherServer server;
@@ -16,6 +27,22 @@ public class ClientHandler implements Runnable {
     private ObjectInputStream in;
     private String studentName;
     private volatile boolean active = true;
+
+    /**
+     * Per-client outbound message queue. The dispatch thread (and addClient state sync)
+     * enqueue messages here via {@link #enqueue(Message)}. The private {@code sendThread}
+     * is the sole consumer and the sole writer of the ObjectOutputStream — no
+     * synchronization on OOS is needed because only one thread ever touches it.
+     */
+    private final LinkedBlockingQueue<Message> sendQueue =
+            new LinkedBlockingQueue<>(SEND_QUEUE_CAPACITY);
+
+    /**
+     * Daemon thread that drains {@link #sendQueue} and writes each message to this
+     * client's OOS. Created and started in the constructor after streams are initialised.
+     * Exits when {@link #shutdown()} poisons the queue or on any write exception.
+     */
+    private Thread sendThread;
 
     public ClientHandler(Socket socket, TeacherServer server) {
         this.socket = socket;
@@ -44,8 +71,12 @@ public class ClientHandler implements Runnable {
             studentName = authMsg.getSenderName();
             System.out.println("[ClientHandler] AUTH_REQUEST from: " + studentName);
 
-            // Confirm authentication
-            NetworkUtil.sendMessage(out, new Message(MessageType.AUTH_SUCCESS, null, "Teacher"));
+            // Start the per-client send thread BEFORE sending AUTH_SUCCESS so that
+            // any state-sync messages queued by addClient() are drained promptly.
+            startSendThread();
+
+            // Confirm authentication — goes through the send queue like everything else
+            enqueue(new Message(MessageType.AUTH_SUCCESS, null, "Teacher"));
             server.addClient(this);
 
             // Main read loop
@@ -57,6 +88,7 @@ public class ClientHandler implements Runnable {
                 handle(msg);
             }
         } finally {
+            shutdown();
             server.removeClient(this);
             closeStreams();
             System.out.println("[ClientHandler] " + studentName + " disconnected.");
@@ -64,30 +96,15 @@ public class ClientHandler implements Runnable {
     }
 
     /**
-     * Sends a message to this specific student.
-     * Synchronized on 'out' to prevent concurrent writes from multiple callers:
-     *   - The ClientHandler pool thread calls send() during addClient() state sync.
-     *   - The dispatch thread calls doSendAll() → NetworkUtil.sendMessage(getOutputStream())
-     *     using synchronized(oos) on the same object.
-     * Without this lock the two threads would interleave bytes in the OOS, causing
-     * StreamCorruptedException on the student side → readMessage() returns null → disconnect.
+     * Enqueues a message for delivery to this student.
+     * Non-blocking — returns true if the message was accepted, false if the queue is full.
+     * Called from:
+     *   - The dispatch thread (doSendAll → distributeToAll)
+     *   - The ClientHandler pool thread during addClient() state sync
+     * Both callers are safe because LinkedBlockingQueue.offer() is thread-safe.
      */
-    public void send(Message msg) {
-        if (out == null) return;
-        synchronized (out) {
-            try {
-                NetworkUtil.sendMessage(out, msg);
-            } catch (Exception e) {
-                System.err.println("[ClientHandler] send error for " + studentName + ": " + e.getMessage());
-            }
-        }
-    }
-
-    /**
-     * Returns the raw OOS so TeacherServer.broadcast() can write directly.
-     */
-    public ObjectOutputStream getOutputStream() {
-        return out;
+    public boolean enqueue(Message msg) {
+        return sendQueue.offer(msg);
     }
 
     public String getStudentName() {
@@ -108,6 +125,49 @@ public class ClientHandler implements Runnable {
                         + " from " + studentName);
                 // Students are read-only. We do not expect incoming sync messages from them.
                 break;
+        }
+    }
+
+    /**
+     * Starts the per-client send thread. The thread drains the sendQueue and writes
+     * each message to the ObjectOutputStream. It is the ONLY thread that ever writes
+     * to this client's OOS — no synchronized block is needed.
+     *
+     * On any IOException the thread logs the error, marks the client inactive,
+     * and exits. The read-loop in run() will detect the inactive flag or the
+     * broken socket and clean up.
+     */
+    private void startSendThread() {
+        sendThread = new Thread(() -> {
+            try {
+                while (active) {
+                    Message msg = sendQueue.take(); // blocks until a message arrives
+                    if (msg.getType() == null) break; // poison pill — shutdown()
+                    try {
+                        NetworkUtil.sendMessage(out, msg);
+                    } catch (Exception e) {
+                        System.err.println("[ClientHandler] sendThread write error for "
+                                + studentName + ": " + e.getMessage());
+                        active = false;
+                        break;
+                    }
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }, "send-" + (studentName != null ? studentName : "pending"));
+        sendThread.setDaemon(true);
+        sendThread.start();
+    }
+
+    /**
+     * Gracefully stops the send thread by interrupting it.
+     * Called from the run() finally block and from TeacherServer.stop().
+     */
+    public void shutdown() {
+        active = false;
+        if (sendThread != null) {
+            sendThread.interrupt();
         }
     }
 

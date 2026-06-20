@@ -5,7 +5,6 @@ import com.classroom.model.MessageType;
 import com.classroom.util.NetworkUtil;
 import javafx.application.Platform;
 import java.io.IOException;
-import java.io.ObjectOutputStream;
 import java.net.BindException;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -237,8 +236,15 @@ public class TeacherServer {
      */
     public void stop() {
         running = false;
-        // Send DISCONNECT directly — bypass the queue, dispatch thread is about to be interrupted
+        // Shut down all per-client send threads BEFORE interrupting dispatch,
+        // so the DISCONNECT message can still be distributed.
         doSendAll(new Message(MessageType.DISCONNECT, null, "Teacher"));
+        // Now shut down each client's send thread
+        synchronized (clients) {
+            for (ClientHandler c : clients) {
+                c.shutdown();
+            }
+        }
         if (dispatchThread  != null) dispatchThread.interrupt();
         if (heartbeatThread != null) heartbeatThread.interrupt();
         try {
@@ -251,12 +257,15 @@ public class TeacherServer {
     }
 
     /**
-     * Sends a message to all connected clients.
-     * Each client's OOS is locked individually (synchronized on the OOS object) so
-     * this can run safely in parallel with ClientHandler.send() which locks the same
-     * object. Without this, addClient()'s state-snapshot sends and the dispatch thread's
-     * doSendAll() would race on the same ObjectOutputStream, corrupting the stream and
-     * causing the student to see an unexpected disconnect.
+     * Distributes a message to all connected clients via their per-client send queues.
+     * This method performs NO I/O — it only calls client.enqueue() which is a non-blocking
+     * LinkedBlockingQueue.offer(). Each client's private send thread handles the actual
+     * ObjectOutputStream write, so a slow client never blocks delivery to other clients.
+     *
+     * If a client's queue is full (offer() returns false), the client is considered
+     * overloaded and is disconnected gracefully. This prevents unbounded memory growth
+     * for a client that cannot keep up.
+     *
      * Called only from the dispatch thread — never from the FX thread.
      */
     private void doSendAll(Message msg) {
@@ -266,16 +275,12 @@ public class TeacherServer {
         }
         List<ClientHandler> failed = new ArrayList<>();
         for (ClientHandler client : snapshot) {
-            ObjectOutputStream oos = client.getOutputStream();
-            if (oos == null) continue;
-            synchronized (oos) {
-                try {
-                    NetworkUtil.sendMessage(oos, msg);
-                } catch (Exception e) {
-                    System.err.println("[TeacherServer] Send failed for "
-                            + client.getStudentName() + ": " + e.getMessage());
-                    failed.add(client);
-                }
+            boolean accepted = client.enqueue(msg);
+            if (!accepted) {
+                System.err.println("[TeacherServer] Send queue full for "
+                        + client.getStudentName() + " — disconnecting.");
+                client.shutdown();
+                failed.add(client);
             }
         }
         if (!failed.isEmpty()) {
@@ -330,11 +335,11 @@ public class TeacherServer {
      * Sends a full-state snapshot ONLY to this new client, then broadcasts the updated student list.
      */
     public void addClient(ClientHandler handler) {
-        // 1. Send whiteboard full state to this student only (existing)
+        // 1. Send whiteboard full state to this student only (via per-client queue)
         if (stateSupplier != null) {
             try {
                 Message stateMsg = stateSupplier.get();
-                if (stateMsg != null) handler.send(stateMsg);
+                if (stateMsg != null) handler.enqueue(stateMsg);
             } catch (Exception e) {
                 System.err.println("[TeacherServer] Failed to send whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
             }
@@ -344,7 +349,7 @@ public class TeacherServer {
         if (pptStateSupplier != null) {
             try {
                 Message pptMsg = pptStateSupplier.get();
-                if (pptMsg != null) handler.send(pptMsg);
+                if (pptMsg != null) handler.enqueue(pptMsg);
             } catch (Exception e) {
                 System.err.println("[TeacherServer] Failed to send PPT state to " + handler.getStudentName() + ": " + e.getMessage());
             }
@@ -354,7 +359,7 @@ public class TeacherServer {
         if (pptWhiteboardStateSupplier != null) {
             try {
                 Message pptFullStateMsg = pptWhiteboardStateSupplier.get();
-                if (pptFullStateMsg != null) handler.send(pptFullStateMsg);
+                if (pptFullStateMsg != null) handler.enqueue(pptFullStateMsg);
             } catch (Exception e) {
                 System.err.println("[TeacherServer] Failed to send PPT whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
             }
@@ -364,7 +369,7 @@ public class TeacherServer {
         if (codeStateSupplier != null) {
             try {
                 Message codeMsg = codeStateSupplier.get();
-                if (codeMsg != null) handler.send(codeMsg);
+                if (codeMsg != null) handler.enqueue(codeMsg);
             } catch (Exception e) {
                 System.err.println("[TeacherServer] Failed to send code state to "
                         + handler.getStudentName() + ": " + e.getMessage());

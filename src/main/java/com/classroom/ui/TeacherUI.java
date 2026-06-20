@@ -986,9 +986,13 @@ public class TeacherUI {
                 });
             }
 
-            // 3. Broadcast FILE_SHARE_COMPLETE (high-priority queue, even on error so students clean up)
+            // 3. Broadcast FILE_SHARE_COMPLETE (low-priority queue, ensures ordered delivery AFTER all chunks)
             FileShareData complete = FileShareData.complete(transferId, fileName, fileSize);
-            server.broadcast(new Message(MessageType.FILE_SHARE_COMPLETE, complete, "Teacher"));
+            try {
+                server.broadcastFileChunk(new Message(MessageType.FILE_SHARE_COMPLETE, complete, "Teacher"));
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
 
             if (!errorOccurred) {
                 Platform.runLater(() -> {

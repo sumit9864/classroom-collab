@@ -15,6 +15,7 @@ import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.io.*;
+import java.lang.ref.SoftReference;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -28,16 +29,45 @@ public class PptService {
     /**
      * Maximum number of slides this service will render in a single session.
      * At 1920px wide, a heavy slide renders to ~2 MB of PNG bytes; 200 slides = ~400 MB worst case.
-     * The SoftReference window (Phase 3 Fix D) will lower this further, but this hard cap
-     * prevents OutOfMemoryError for pathological decks before that is in place.
+     * The SoftReference window (Fix D) lowers actual resident memory, but this hard cap
+     * prevents OutOfMemoryError for pathological decks.
      */
     public static final int MAX_RENDERABLE_SLIDES = 200;
 
-    private byte[][] renderedSlides;  // one PNG byte[] per slide, null until loaded
+    /**
+     * Number of slides to keep as strong references around the current index.
+     * Window is [currentIndex - WINDOW_HALF, currentIndex + WINDOW_HALF].
+     * Slides outside this window are held only via SoftReference and may be
+     * reclaimed by the GC under memory pressure.
+     */
+    private static final int WINDOW_HALF = 1;
+
+    /**
+     * SoftReference array — one entry per slide. Slides inside the strong-reference
+     * window also have a SoftReference (for uniform lookup), but the GC won't collect
+     * them because they are also reachable from {@link #strongWindow}.
+     *
+     * On GC eviction, re-navigating to that slide triggers a synchronous re-render
+     * on the render executor — a 100–500ms delay acceptable under memory pressure.
+     */
+    @SuppressWarnings("unchecked")
+    private SoftReference<byte[]>[] slideRefs;
+
+    /**
+     * Strong-reference window: holds byte[] references for slides near the current index.
+     * These prevent the GC from collecting the most-needed slides even under memory pressure.
+     * Updated on every slide navigation.
+     */
+    private byte[][] strongWindow;
+
     private int currentIndex  = 0;
     private int totalSlides   = 0;
     private boolean loaded    = false;
     private File loadedFile   = null;  // reference to the currently loaded .pptx file
+
+    // Rendering metadata — stored for on-demand re-render of evicted slides
+    private double renderScale;
+    private int renderHeight;
 
     // Single-threaded executor — all POI rendering runs here, never on FX thread
     private final ExecutorService renderExecutor =
@@ -51,6 +81,7 @@ public class PptService {
      * Loads and renders all slides of the given .pptx file on the background render thread.
      * Calls onSuccess (on FX thread) when all slides are ready, or onError with a message on failure.
      */
+    @SuppressWarnings("unchecked")
     public void loadAsync(File file, Runnable onSuccess, Consumer<String> onError) {
         this.loadedFile = null; // reset before rendering starts
         renderExecutor.submit(() -> {
@@ -76,49 +107,24 @@ public class PptService {
                 double scale = TARGET_WIDTH / (double) pgSize.width;
                 int imgH = (int) (pgSize.height * scale);
 
-                byte[][] rendered = new byte[slides.size()][];
+                SoftReference<byte[]>[] refs = new SoftReference[slides.size()];
 
                 for (int i = 0; i < slides.size(); i++) {
-                    BufferedImage img = new BufferedImage(
-                            TARGET_WIDTH, imgH, BufferedImage.TYPE_INT_RGB);
-                    Graphics2D g = img.createGraphics();
-                    try {
-                        // Quality rendering hints
-                        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
-                                           RenderingHints.VALUE_ANTIALIAS_ON);
-                        g.setRenderingHint(RenderingHints.KEY_RENDERING,
-                                           RenderingHints.VALUE_RENDER_QUALITY);
-                        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                                           RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-                        g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS,
-                                           RenderingHints.VALUE_FRACTIONALMETRICS_ON);
-
-                        // White background — POI does not guarantee background fill
-                        g.setPaint(Color.WHITE);
-                        g.fillRect(0, 0, TARGET_WIDTH, imgH);
-
-                        // Scale transform and render
-                        AffineTransform at = AffineTransform.getScaleInstance(scale, scale);
-                        g.setTransform(at);
-                        org.apache.poi.sl.draw.DrawFactory.getInstance(g)
-                                .getDrawable(slides.get(i)).draw(g);
-
-                    } finally {
-                        g.dispose();
-                    }
-
-                    // Encode to PNG bytes
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    ImageIO.write(img, "PNG", baos);
-                    rendered[i] = baos.toByteArray();
+                    byte[] pngBytes = renderSlide(slides.get(i), scale, imgH);
+                    refs[i] = new SoftReference<>(pngBytes);
                 }
 
                 // Commit results (accessed only after this point)
-                this.renderedSlides = rendered;
-                this.totalSlides    = slides.size();
-                this.currentIndex   = 0;
-                this.loaded         = true;
-                this.loadedFile     = file;  // store for export
+                this.slideRefs    = refs;
+                this.totalSlides  = slides.size();
+                this.currentIndex = 0;
+                this.renderScale  = scale;
+                this.renderHeight = imgH;
+                this.loaded       = true;
+                this.loadedFile   = file;
+
+                // Initialise the strong-reference window around slide 0
+                updateStrongWindow();
 
                 javafx.application.Platform.runLater(onSuccess);
 
@@ -129,16 +135,109 @@ public class PptService {
         });
     }
 
+    /**
+     * Renders a single slide to PNG bytes. Used during initial load and for
+     * on-demand re-rendering of GC-evicted slides.
+     */
+    private byte[] renderSlide(XSLFSlide slide, double scale, int imgH) throws IOException {
+        BufferedImage img = new BufferedImage(
+                TARGET_WIDTH, imgH, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = img.createGraphics();
+        try {
+            // Quality rendering hints
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                               RenderingHints.VALUE_ANTIALIAS_ON);
+            g.setRenderingHint(RenderingHints.KEY_RENDERING,
+                               RenderingHints.VALUE_RENDER_QUALITY);
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                               RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS,
+                               RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+
+            // White background — POI does not guarantee background fill
+            g.setPaint(Color.WHITE);
+            g.fillRect(0, 0, TARGET_WIDTH, imgH);
+
+            // Scale transform and render
+            AffineTransform at = AffineTransform.getScaleInstance(scale, scale);
+            g.setTransform(at);
+            org.apache.poi.sl.draw.DrawFactory.getInstance(g)
+                    .getDrawable(slide).draw(g);
+
+        } finally {
+            g.dispose();
+        }
+
+        // Encode to PNG bytes
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(img, "PNG", baos);
+        return baos.toByteArray();
+    }
+
+    /**
+     * Updates the strong-reference window around {@link #currentIndex}.
+     * Slides at indices [currentIndex - WINDOW_HALF, currentIndex + WINDOW_HALF]
+     * are pinned in the {@link #strongWindow} array so the GC cannot collect them.
+     * All other slides are reachable only via SoftReference and may be evicted
+     * under memory pressure.
+     */
+    private void updateStrongWindow() {
+        int windowSize = WINDOW_HALF * 2 + 1;
+        strongWindow = new byte[windowSize][];
+        for (int offset = -WINDOW_HALF; offset <= WINDOW_HALF; offset++) {
+            int idx = currentIndex + offset;
+            if (idx >= 0 && idx < totalSlides) {
+                SoftReference<byte[]> ref = slideRefs[idx];
+                byte[] bytes = (ref != null) ? ref.get() : null;
+                if (bytes != null) {
+                    strongWindow[offset + WINDOW_HALF] = bytes;
+                }
+            }
+        }
+    }
+
+    /**
+     * Retrieves the PNG bytes for a given slide index.
+     * If the SoftReference has been cleared by the GC, re-renders the slide
+     * synchronously (blocking the caller — which is always the FX thread for
+     * navigation, so a brief 100–500ms stall is acceptable under memory pressure).
+     */
+    private byte[] getSlideBytes(int index) {
+        if (index < 0 || index >= totalSlides) return null;
+        SoftReference<byte[]> ref = slideRefs[index];
+        byte[] bytes = (ref != null) ? ref.get() : null;
+        if (bytes != null) return bytes;
+
+        // SoftReference was cleared — re-render on the spot.
+        // This is a rare path: only happens under memory pressure for slides
+        // outside the strong-reference window.
+        System.out.println("[PptService] Re-rendering evicted slide " + index);
+        try (XMLSlideShow pptx = new XMLSlideShow(new FileInputStream(loadedFile))) {
+            List<XSLFSlide> slides = pptx.getSlides();
+            if (index < slides.size()) {
+                bytes = renderSlide(slides.get(index), renderScale, renderHeight);
+                slideRefs[index] = new SoftReference<>(bytes);
+                return bytes;
+            }
+        } catch (Exception e) {
+            System.err.println("[PptService] Re-render failed for slide " + index + ": " + e.getMessage());
+        }
+        return null;
+    }
+
     /** Returns a SlideData for the current slide, or null if not loaded. */
     public SlideData getCurrentSlideData() {
         if (!loaded) return null;
-        return new SlideData(renderedSlides[currentIndex], currentIndex, totalSlides);
+        byte[] bytes = getSlideBytes(currentIndex);
+        if (bytes == null) return null;
+        return new SlideData(bytes, currentIndex, totalSlides);
     }
 
     /** Advances to the next slide and returns its SlideData, or null if already at the last slide. */
     public SlideData nextSlide() {
         if (!loaded || currentIndex >= totalSlides - 1) return null;
         currentIndex++;
+        updateStrongWindow();
         return getCurrentSlideData();
     }
 
@@ -146,6 +245,7 @@ public class PptService {
     public SlideData prevSlide() {
         if (!loaded || currentIndex <= 0) return null;
         currentIndex--;
+        updateStrongWindow();
         return getCurrentSlideData();
     }
 
