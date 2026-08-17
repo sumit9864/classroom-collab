@@ -372,11 +372,58 @@ public class StudentUI {
         statusBar.setAlignment(Pos.CENTER_LEFT);
         statusBar.getStyleClass().add("status-bar");
 
+        // ── FLOATING UI (Prompt 7) ─────────────────────────────────────────
+        HBox topNavPill = new HBox(5);
+        topNavPill.getStyleClass().add("floating-pill");
+        topNavPill.setAlignment(Pos.CENTER);
+        ToggleButton t1 = new ToggleButton("Whiteboard"); t1.getStyleClass().add("toggle-button");
+        ToggleButton t2 = new ToggleButton("PPT Sharing"); t2.getStyleClass().add("toggle-button");
+        ToggleButton t3 = new ToggleButton("Code Sharing"); t3.getStyleClass().add("toggle-button");
+        ToggleButton t4 = new ToggleButton("Files"); t4.getStyleClass().add("toggle-button");
+        ToggleGroup tabGroup = new ToggleGroup();
+        t1.setToggleGroup(tabGroup); t2.setToggleGroup(tabGroup); t3.setToggleGroup(tabGroup); t4.setToggleGroup(tabGroup);
+        topNavPill.getChildren().addAll(t1, t2, t3, t4);
+        t1.setSelected(true);
+        tabGroup.selectedToggleProperty().addListener((obs, old, newVal) -> {
+            if (newVal == t1) tabPane.getSelectionModel().select(0);
+            else if (newVal == t2) tabPane.getSelectionModel().select(1);
+            else if (newVal == t3) tabPane.getSelectionModel().select(2);
+            else if (newVal == t4) tabPane.getSelectionModel().select(3);
+        });
+        tabPane.getSelectionModel().selectedIndexProperty().addListener((obs, old, newVal) -> {
+            if (newVal.intValue() == 0) t1.setSelected(true);
+            else if (newVal.intValue() == 1) t2.setSelected(true);
+            else if (newVal.intValue() == 2) t3.setSelected(true);
+            else if (newVal.intValue() == 3) t4.setSelected(true);
+        });
+
+        HBox metadataBadge = new HBox(10);
+        metadataBadge.getStyleClass().add("floating-panel");
+        metadataBadge.setAlignment(Pos.CENTER_LEFT);
+        // Move nodes to metadataBadge (implicitly removes from topBar/statusBar)
+        metadataBadge.getChildren().addAll(titleLabel, titleSep, roleLabel, dotLabel, statusLabel, themeBtn, disconnectButton);
+
+        HBox actionsBadge = new HBox(8);
+        actionsBadge.getStyleClass().add("floating-pill");
+        actionsBadge.setAlignment(Pos.CENTER_LEFT);
+        actionsBadge.getChildren().addAll(zoomInBtn, zoomOutBtn);
+
         // ── ROOT ───────────────────────────────────────────────────────────
-        BorderPane root = new BorderPane();
-        root.setTop(topBar);
-        root.setCenter(tabPane);
-        root.setBottom(statusBar);
+        javafx.scene.layout.StackPane root = new javafx.scene.layout.StackPane();
+        javafx.scene.layout.Pane uiOverlay = new javafx.scene.layout.Pane();
+        uiOverlay.setPickOnBounds(false); // Let clicks pass through to canvas
+        
+        // Positioning
+        topNavPill.layoutXProperty().bind(root.widthProperty().subtract(topNavPill.widthProperty()).divide(2));
+        topNavPill.setLayoutY(15);
+        metadataBadge.setLayoutX(15);
+        metadataBadge.setLayoutY(15);
+        
+        actionsBadge.layoutXProperty().bind(root.widthProperty().subtract(actionsBadge.widthProperty()).subtract(15));
+        actionsBadge.setLayoutY(15);
+        
+        uiOverlay.getChildren().addAll(metadataBadge, topNavPill, actionsBadge);
+        root.getChildren().addAll(tabPane, uiOverlay);
 
         stage.setOnCloseRequest(e -> { if (client != null) client.disconnect(); });
         stage.setMinWidth(800);

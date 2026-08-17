@@ -24,6 +24,10 @@
 .login-field-label    { -fx-text-fill: #94a3b8; -fx-font-size: 12px; -fx-font-weight: bold; }
 .login-logo-label     { -fx-text-fill: #4e7fff; -fx-font-size: 20px; -fx-font-weight: bold; }
 
+/* ── Floating Panels ──────────────────────────────────────────────────────── */
+.floating-panel { -fx-background-color: rgba(22, 27, 34, 0.85); -fx-border-color: #2d3748; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 15, 0, 0, 4); }
+.floating-pill  { -fx-background-color: rgba(22, 27, 34, 0.85); -fx-border-color: #2d3748; -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 10, 0, 0, 2); }
+
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 .button {
     -fx-background-color: #1f2430;
@@ -294,4 +298,45 @@
 .btn-copy-success {
     -fx-background-color: #064e3b; -fx-text-fill: #34d399; -fx-border-color: #059669;
     -fx-border-width: 1px; -fx-background-radius: 5px; -fx-border-radius: 5px;
+}
+
+/* ── Canvas Text Editor (inline editing overlay) ─────────────────────────── */
+.canvas-text-editor {
+    -fx-background-color: transparent;
+    -fx-control-inner-background: transparent;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+    -fx-focus-color: transparent;
+    -fx-faint-focus-color: transparent;
+    -fx-text-fill: #e2e8f0;
+    -fx-highlight-fill: #4e7fff;
+    -fx-highlight-text-fill: white;
+    -fx-cursor: text;
+}
+.canvas-text-editor .content {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+.canvas-text-editor .scroll-pane {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+.canvas-text-editor .scroll-pane > .viewport {
+    -fx-background-color: transparent;
+}
+.canvas-text-editor .scroll-bar {
+    -fx-opacity: 0;
+    -fx-pref-width: 0;
+    -fx-pref-height: 0;
+}
+
+/* ── Text Format Toolbar ─────────────────────────────────────────────────── */
+.toolbar-text-format {
+    -fx-background-color: #161b22;
+    -fx-border-color: #2d3748;
+    -fx-border-width: 0 0 1 0;
+    -fx-padding: 5px 14px;
 }

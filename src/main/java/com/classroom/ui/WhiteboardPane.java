@@ -7,13 +7,18 @@ import javafx.scene.Cursor;
 import javafx.scene.Group;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.TextArea;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.*;
 import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.FontPosture;
+import javafx.scene.text.TextAlignment;
 import javafx.scene.text.Text;
+import javafx.scene.input.KeyCode;
+import javafx.geometry.VPos;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -107,6 +112,10 @@ public class WhiteboardPane extends StackPane {
 
     // ── Selection state (teacher only) ────────────────────────────────────────
     private String               selectedShapeId = null;
+
+    public String getSelectedShapeId() {
+        return selectedShapeId;
+    }
     private final List<Rectangle> handles        = new ArrayList<>();
 
     // Shape creation drag
@@ -124,6 +133,28 @@ public class WhiteboardPane extends StackPane {
     private double       sDragX, sDragY;
     private double       origX, origY, origW, origH;
     private ShapeData    origSdCopy;
+
+    // ── Text Inline Editing State ─────────────────────────────────────────────
+    private String editingTextId = null;
+    private TextArea editingTextArea = null;
+    private boolean textClickPending = false;
+    private double textPressX, textPressY;
+    private Consumer<String> onSelectionChanged;
+    private long lastMeasureNs = 0;
+
+    // Default formatting for new TEXT shapes
+    private String  defaultFontFamily    = "System";
+    private double  defaultFontSize      = 24.0;
+    private boolean defaultBold          = false;
+    private boolean defaultItalic        = false;
+    private boolean defaultUnderline     = false;
+    private String  defaultTextAlignment = "LEFT";
+    
+    // Active formatting during inline editing
+    private String  activeFontFamily;
+    private double  activeFontSize;
+    private boolean activeBold, activeItalic, activeUnderline;
+    private String  activeAlignment;
 
     // ── Callbacks ─────────────────────────────────────────────────────────────
     private final Consumer<StrokeData> onStrokeDrawn;
@@ -202,6 +233,10 @@ public class WhiteboardPane extends StackPane {
 
     public void setStrokeProgressCallback(Consumer<StrokeData> callback) {
         this.onStrokeProgress = callback;
+    }
+
+    public void setOnSelectionChanged(Consumer<String> callback) {
+        this.onSelectionChanged = callback;
     }
 
     // ── FREEHAND canvas mouse handlers ────────────────────────────────────────
@@ -305,40 +340,41 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setOnMousePressed(e -> {
             if (!e.isPrimaryButtonDown()) return;
             e.consume(); // prevent ScrollPane from capturing the drag
+            if (drawMode == DrawMode.SHAPE_TEXT) {
+                if (editingTextId != null) commitEditing();
+                textClickPending = true;
+                textPressX = e.getX();
+                textPressY = e.getY();
+                return;
+            }
             if (drawMode == DrawMode.SELECT) {
                 clearHandles();
                 selectedShapeId = null;
+                if (onSelectionChanged != null) onSelectionChanged.accept(null);
             } else if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER) {
                 shapeDragX = e.getX();
                 shapeDragY = e.getY();
                 startPreview(e.getX(), e.getY());
 
                 // For non-TEXT shapes: create a zero-size shape immediately and broadcast SHAPE_ADD.
-                // This lets students see the shape appear and stretch in real time as the teacher drags.
-                if (drawMode != DrawMode.SHAPE_TEXT) {
-                    ShapeData earlyShape = createShapeFromBounds(
-                        shapeDragX, shapeDragY, shapeDragX, shapeDragY);
-                    if (earlyShape != null) {
-                        // Add to internal maps without recording history yet.
-                        // History is recorded in finalizeShape() so undo still works as one atomic action.
-                        shapeDataMap.put(earlyShape.getId(), earlyShape);
-                        Group g = buildGroup(earlyShape);
-                        shapeNodeMap.put(earlyShape.getId(), g);
-                        shapeOverlayPane.getChildren().add(g);
-                        currentDragShapeId = earlyShape.getId();
-                        // Broadcast SHAPE_ADD so students see the shape appear
-                        if (onShapeAdded != null) onShapeAdded.accept(earlyShape);
-                    }
+                ShapeData earlyShape = createShapeFromBounds(
+                    shapeDragX, shapeDragY, shapeDragX, shapeDragY);
+                if (earlyShape != null) {
+                    shapeDataMap.put(earlyShape.getId(), earlyShape);
+                    Group g = buildGroup(earlyShape);
+                    shapeNodeMap.put(earlyShape.getId(), g);
+                    shapeOverlayPane.getChildren().add(g);
+                    currentDragShapeId = earlyShape.getId();
+                    if (onShapeAdded != null) onShapeAdded.accept(earlyShape);
                 }
             }
         });
         shapeOverlayPane.setOnMouseDragged(e -> {
             if (!e.isPrimaryButtonDown()) return;
             e.consume(); // prevent ScrollPane from panning
-            if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
+            if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT && drawMode != DrawMode.SHAPE_TEXT) {
                 updatePreview(e.getX(), e.getY());
 
-                // Update the tracked shape geometry and broadcast SHAPE_UPDATE (throttled)
                 if (currentDragShapeId != null) {
                     ShapeData sd = shapeDataMap.get(currentDragShapeId);
                     if (sd != null) {
@@ -355,6 +391,17 @@ public class WhiteboardPane extends StackPane {
         });
         shapeOverlayPane.setOnMouseReleased(e -> {
             e.consume(); // prevent ScrollPane from capturing the event
+            if (drawMode == DrawMode.SHAPE_TEXT) {
+                if (textClickPending) {
+                    textClickPending = false;
+                    double dx = e.getX() - textPressX;
+                    double dy = e.getY() - textPressY;
+                    if (Math.hypot(dx, dy) < 5) {
+                        startInlineEditing(textPressX, textPressY, null);
+                    }
+                }
+                return;
+            }
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 finalizeShape(e.getX(), e.getY());
             }
@@ -366,7 +413,7 @@ public class WhiteboardPane extends StackPane {
         if (previewNode != null) shapeOverlayPane.getChildren().remove(previewNode);
         Color c = currentColor;
         switch (drawMode) {
-            case SHAPE_RECT: case SHAPE_TEXT: {
+            case SHAPE_RECT: {
                 Rectangle r = new Rectangle(x, y, 1, 1);
                 r.setStroke(c); r.setFill(Color.TRANSPARENT); r.setStrokeWidth(strokeWidth);
                 r.getStrokeDashArray().addAll(6.0, 3.0);
@@ -433,23 +480,6 @@ public class WhiteboardPane extends StackPane {
             previewNode = null;
         }
 
-        if (drawMode == DrawMode.SHAPE_TEXT) {
-            // TEXT shapes are not pre-created on press — show dialog and create now
-            double x0 = Math.min(shapeDragX, x), y0 = Math.min(shapeDragY, y);
-            double w  = Math.abs(x - shapeDragX),   h  = Math.abs(y - shapeDragY);
-            TextInputDialog dlg = new TextInputDialog();
-            dlg.setTitle("Text Box");
-            dlg.setHeaderText("Enter text for the text box:");
-            dlg.setContentText("Text:");
-            Optional<String> res = dlg.showAndWait();
-            if (!res.isPresent() || res.get().isBlank()) return;
-            ShapeData sd = new ShapeData(ShapeType.TEXT, x0, y0,
-                    Math.max(w, 80), Math.max(h, 28),
-                    toHex(currentColor), strokeWidth, res.get(), 14.0, annotationMode);
-            addShapeInternal(sd); // recordAction + broadcast SHAPE_ADD
-            return;
-        }
-
         // For shapes tracked via currentDragShapeId (RECT, ELLIPSE, LINE, ARROW)
         if (currentDragShapeId != null) {
             ShapeData sd = shapeDataMap.get(currentDragShapeId);
@@ -477,6 +507,228 @@ public class WhiteboardPane extends StackPane {
                 }
             }
             currentDragShapeId = null;
+        }
+    }
+
+    // ── Inline Text Editing ───────────────────────────────────────────────────
+    private void startInlineEditing(double x, double y, String existingId) {
+        editingTextId = existingId;
+        editingTextArea = new TextArea();
+        editingTextArea.getStyleClass().add("canvas-text-editor");
+        editingTextArea.setWrapText(true);
+        editingTextArea.setLayoutX(x);
+        editingTextArea.setLayoutY(y);
+
+        ShapeData sd = existingId != null ? shapeDataMap.get(existingId) : null;
+        
+        activeFontFamily = sd != null ? sd.getFontFamily() : defaultFontFamily;
+        activeFontSize   = sd != null ? sd.getFontSize() : defaultFontSize;
+        activeBold       = sd != null ? sd.isBold() : defaultBold;
+        activeItalic     = sd != null ? sd.isItalic() : defaultItalic;
+        activeUnderline  = sd != null ? sd.isUnderline() : defaultUnderline;
+        activeAlignment  = sd != null ? sd.getTextAlignment() : defaultTextAlignment;
+        
+        updateEditingTextAreaStyle();
+
+        if (sd != null) {
+            editingTextArea.setText(sd.getText() != null ? sd.getText() : "");
+            if (!sd.isAutoWidth()) {
+                editingTextArea.setPrefWidth(sd.getW());
+                editingTextArea.setPrefHeight(sd.getH());
+            } else {
+                measureTextWidth();
+            }
+            Group g = shapeNodeMap.get(existingId);
+            if (g != null) g.setVisible(false);
+        } else {
+            editingTextArea.setText("");
+            measureTextWidth();
+        }
+
+        editingTextArea.textProperty().addListener((obs, oldVal, newVal) -> {
+            long now = System.nanoTime();
+            if (now - lastMeasureNs >= 16_000_000L) {
+                lastMeasureNs = now;
+                measureTextWidth();
+            } else {
+                javafx.application.Platform.runLater(this::measureTextWidth);
+            }
+        });
+
+        editingTextArea.focusedProperty().addListener((obs, wasFocused, isFocused) -> {
+            if (!isFocused) commitEditing();
+        });
+
+        editingTextArea.setOnKeyPressed(e -> {
+            if (e.getCode() == KeyCode.ESCAPE) {
+                e.consume();
+                commitEditing();
+            }
+        });
+
+        shapeOverlayPane.getChildren().add(editingTextArea);
+        editingTextArea.requestFocus();
+        
+        if (onSelectionChanged != null) onSelectionChanged.accept(existingId != null ? existingId : "NEW_TEXT");
+    }
+
+    private void updateEditingTextAreaStyle() {
+        if (editingTextArea == null) return;
+        editingTextArea.setStyle(String.format(
+            "-fx-font-family: '%s'; -fx-font-size: %.1fpx; -fx-font-weight: %s; -fx-font-style: %s; -fx-text-alignment: %s;",
+            activeFontFamily, activeFontSize, activeBold ? "bold" : "normal", activeItalic ? "italic" : "normal", activeAlignment.toLowerCase()
+        ));
+    }
+
+    private void measureTextWidth() {
+        if (editingTextArea == null) return;
+        boolean isAutoWidth = true;
+        if (editingTextId != null) {
+            ShapeData sd = shapeDataMap.get(editingTextId);
+            if (sd != null && !sd.isAutoWidth()) isAutoWidth = false;
+        }
+        if (!isAutoWidth) return;
+
+        Text temp = new Text(editingTextArea.getText() + "W"); 
+        temp.setFont(Font.font(
+                activeFontFamily,
+                activeBold ? FontWeight.BOLD : FontWeight.NORMAL,
+                activeItalic ? FontPosture.ITALIC : FontPosture.REGULAR,
+                activeFontSize
+        ));
+        double width = Math.max(20, temp.getLayoutBounds().getWidth());
+        editingTextArea.setPrefWidth(width);
+    }
+
+    public void commitEditing() {
+        if (editingTextArea == null) return;
+        
+        String content = editingTextArea.getText();
+        String id = editingTextId;
+        boolean isExisting = (id != null);
+        
+        ShapeData oldSdCopy = null;
+        if (isExisting) {
+            ShapeData sd = shapeDataMap.get(id);
+            if (sd != null) {
+                oldSdCopy = sd.copy();
+                Group g = shapeNodeMap.get(id);
+                if (g != null) g.setVisible(true); 
+            }
+        }
+        
+        shapeOverlayPane.getChildren().remove(editingTextArea);
+        double finalW = editingTextArea.getWidth();
+        double finalH = editingTextArea.getHeight();
+        editingTextArea = null;
+        editingTextId = null;
+
+        if (content == null || content.isBlank()) {
+            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId);
+            return; 
+        }
+
+        ShapeData sd;
+        if (isExisting && oldSdCopy != null) {
+            sd = shapeDataMap.get(id);
+            sd.setText(content);
+            sd.setFontFamily(activeFontFamily);
+            sd.setFontSize(activeFontSize);
+            sd.setBold(activeBold);
+            sd.setItalic(activeItalic);
+            sd.setUnderline(activeUnderline);
+            sd.setTextAlignment(activeAlignment);
+            
+            syncNodeFromData(sd);
+            Group g = shapeNodeMap.get(id);
+            if (g != null) {
+                for (javafx.scene.Node n : g.getChildren()) {
+                    if (n instanceof Text) {
+                        sd.setH(((Text)n).getLayoutBounds().getHeight());
+                        if (sd.isAutoWidth()) {
+                             sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
+                        }
+                    }
+                }
+            }
+            syncNodeFromData(sd); 
+            recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSdCopy));
+            if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId);
+        } else {
+            sd = new ShapeData(ShapeType.TEXT, textPressX, textPressY, finalW, finalH,
+                    toHex(currentColor), strokeWidth, content, activeFontSize, annotationMode);
+            sd.setFontFamily(activeFontFamily);
+            sd.setBold(activeBold);
+            sd.setItalic(activeItalic);
+            sd.setUnderline(activeUnderline);
+            sd.setTextAlignment(activeAlignment);
+            sd.setAutoWidth(true);
+            
+            addShapeInternal(sd); 
+            
+            Group g = shapeNodeMap.get(sd.getId());
+            if (g != null) {
+                for (javafx.scene.Node n : g.getChildren()) {
+                    if (n instanceof Text) {
+                        sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
+                        sd.setH(((Text)n).getLayoutBounds().getHeight());
+                    }
+                }
+            }
+            syncNodeFromData(sd);
+            if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId); 
+        }
+    }
+
+    public void applyTextFormatting(String fontFamily, double fontSize, boolean bold, boolean italic, boolean underline, String alignment, String colorHex) {
+        if (editingTextArea != null) {
+            activeFontFamily = fontFamily;
+            activeFontSize = fontSize;
+            activeBold = bold;
+            activeItalic = italic;
+            activeUnderline = underline;
+            activeAlignment = alignment;
+            currentColor = Color.web(colorHex);
+            updateEditingTextAreaStyle();
+        } else if (selectedShapeId != null) {
+            ShapeData sd = shapeDataMap.get(selectedShapeId);
+            if (sd != null && sd.getType() == ShapeType.TEXT) {
+                ShapeData oldSd = sd.copy();
+                sd.setFontFamily(fontFamily);
+                sd.setFontSize(fontSize);
+                sd.setBold(bold);
+                sd.setItalic(italic);
+                sd.setUnderline(underline);
+                sd.setTextAlignment(alignment);
+                sd.setStrokeHex(colorHex);
+                
+                syncNodeFromData(sd);
+                Group g = shapeNodeMap.get(selectedShapeId);
+                if (g != null) {
+                    for (javafx.scene.Node n : g.getChildren()) {
+                        if (n instanceof Text) {
+                            if (sd.isAutoWidth()) {
+                                sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
+                            }
+                            sd.setH(((Text)n).getLayoutBounds().getHeight());
+                        }
+                    }
+                }
+                syncNodeFromData(sd);
+                
+                recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSd));
+                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            }
+        } else {
+            defaultFontFamily = fontFamily;
+            defaultFontSize = fontSize;
+            defaultBold = bold;
+            defaultItalic = italic;
+            defaultUnderline = underline;
+            defaultTextAlignment = alignment;
+            currentColor = Color.web(colorHex);
         }
     }
 
@@ -596,10 +848,23 @@ public class WhiteboardPane extends StackPane {
                 border.setFill(Color.TRANSPARENT);
                 border.setStrokeWidth(1);
                 border.getStrokeDashArray().addAll(4.0, 2.0);
-                Text txt = new Text(sd.getX() + 4, sd.getY() + sd.getFontSize() + 4, sd.getText());
+                border.setVisible(selectedShapeId != null && selectedShapeId.equals(sd.getId()));
+
+                Text txt = new Text(sd.getText() != null ? sd.getText() : "");
                 txt.setFill(c);
-                txt.setFont(Font.font(sd.getFontSize()));
-                txt.setWrappingWidth(sd.getW() - 8);
+                txt.setFont(Font.font(
+                    sd.getFontFamily(), 
+                    sd.isBold() ? FontWeight.BOLD : FontWeight.NORMAL,
+                    sd.isItalic() ? FontPosture.ITALIC : FontPosture.REGULAR,
+                    sd.getFontSize()
+                ));
+                txt.setUnderline(sd.isUnderline());
+                txt.setTextAlignment(TextAlignment.valueOf(sd.getTextAlignment()));
+                txt.setWrappingWidth(sd.getW());
+                txt.setTextOrigin(VPos.TOP);
+                txt.setX(sd.getX());
+                txt.setY(sd.getY());
+                
                 g.getChildren().addAll(border, txt);
                 break;
             }
@@ -674,8 +939,17 @@ public class WhiteboardPane extends StackPane {
                     } else if (n instanceof Text) {
                         Text t = (Text) n;
                         t.setText(sd.getText() != null ? sd.getText() : "");
-                        t.setX(sd.getX() + 4); t.setY(sd.getY() + sd.getFontSize() + 4);
-                        t.setWrappingWidth(sd.getW() - 8);
+                        t.setX(sd.getX()); t.setY(sd.getY());
+                        t.setFont(Font.font(
+                            sd.getFontFamily(), 
+                            sd.isBold() ? FontWeight.BOLD : FontWeight.NORMAL,
+                            sd.isItalic() ? FontPosture.ITALIC : FontPosture.REGULAR,
+                            sd.getFontSize()
+                        ));
+                        t.setUnderline(sd.isUnderline());
+                        t.setTextAlignment(TextAlignment.valueOf(sd.getTextAlignment()));
+                        t.setWrappingWidth(sd.getW());
+                        t.setFill(Color.web(sd.getStrokeHex()));
                     }
                 }
                 break;
@@ -696,9 +970,20 @@ public class WhiteboardPane extends StackPane {
 
     // ── Interactive move (teacher SELECT mode) ────────────────────────────────
     private void wireGroupInteraction(Group g, String id) {
-        // Single-click: select & start move
+        // Double-click: edit text content (TEXT shapes only, SELECT mode)
+        // Or single click in SHAPE_TEXT mode
         g.setOnMousePressed(e -> {
-            if (drawMode != DrawMode.SELECT || !e.isPrimaryButtonDown()) return;
+            if (!e.isPrimaryButtonDown()) return;
+            if (drawMode == DrawMode.SHAPE_TEXT) {
+                ShapeData sd = shapeDataMap.get(id);
+                if (sd != null && sd.getType() == ShapeType.TEXT) {
+                    e.consume();
+                    if (editingTextId != null) commitEditing();
+                    startInlineEditing(sd.getX(), sd.getY(), id);
+                }
+                return;
+            }
+            if (drawMode != DrawMode.SELECT) return;
             e.consume();
             selectShape(id);
             selectAction = SelectAction.MOVING;
@@ -709,52 +994,15 @@ public class WhiteboardPane extends StackPane {
                 origSdCopy = sd.copy(); 
             }
         });
-        g.setOnMouseDragged(e -> {
-            if (drawMode != DrawMode.SELECT || selectAction != SelectAction.MOVING) return;
-            e.consume();
-            double dx = (e.getSceneX() - sDragX) / zoomLevel;
-            double dy = (e.getSceneY() - sDragY) / zoomLevel;
-            ShapeData sd = shapeDataMap.get(id);
-            if (sd == null) return;
-            sd.setX(origX + dx); sd.setY(origY + dy);
-            syncNodeFromData(sd);
-            updateHandles();
-            // Stream position to students while dragging (throttled)
-            long nowDrag = System.nanoTime();
-            if (nowDrag - lastShapeDragNs >= SHAPE_DRAG_INTERVAL_NS) {
-                lastShapeDragNs = nowDrag;
-                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
-            }
-        });
-        g.setOnMouseReleased(e -> {
-            if (drawMode != DrawMode.SELECT || selectAction != SelectAction.MOVING) return;
-            e.consume();
-            selectAction = SelectAction.NONE;
-            ShapeData sd = shapeDataMap.get(id);
-            if (sd != null && onShapeUpdated != null) {
-                if (origSdCopy != null) recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), origSdCopy));
-                origSdCopy = null;
-                onShapeUpdated.accept(sd);
-            }
-        });
-
-        // Double-click: edit text content (TEXT shapes only, SELECT mode)
+        
         g.setOnMouseClicked(e -> {
             if (drawMode != DrawMode.SELECT || e.getClickCount() != 2) return;
             ShapeData sd = shapeDataMap.get(id);
             if (sd == null || sd.getType() != ShapeType.TEXT) return;
             e.consume();
-            ShapeData oldSdCopy = sd.copy();
-            TextInputDialog dlg = new TextInputDialog(sd.getText() != null ? sd.getText() : "");
-            dlg.setTitle("Edit Text Box");
-            dlg.setHeaderText("Edit the text content:");
-            dlg.setContentText("Text:");
-            Optional<String> res = dlg.showAndWait();
-            if (!res.isPresent() || res.get().isBlank()) return;
-            sd.setText(res.get());
-            syncNodeFromData(sd);
-            recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSdCopy));
-            if (onShapeUpdated != null) onShapeUpdated.accept(sd);
+            if (editingTextId != null) commitEditing();
+            startInlineEditing(sd.getX(), sd.getY(), id);
+            clearHandles(); 
         });
     }
 
@@ -764,14 +1012,32 @@ public class WhiteboardPane extends StackPane {
         clearHandles();
         ShapeData sd = shapeDataMap.get(id);
         if (sd == null) return;
+        
+        if (sd.getType() == ShapeType.TEXT) {
+            Group g = shapeNodeMap.get(id);
+            if (g != null && !g.getChildren().isEmpty()) {
+                g.getChildren().get(0).setVisible(true);
+            }
+        }
+        
         double[][] pts = handlePositions(sd);
         for (int i = 0; i < pts.length; i++) {
             handles.add(makeHandle(i, pts[i][0], pts[i][1]));
         }
         shapeOverlayPane.getChildren().addAll(handles);
+        if (onSelectionChanged != null) onSelectionChanged.accept(id);
     }
 
     private void clearHandles() {
+        if (selectedShapeId != null) {
+            ShapeData sd = shapeDataMap.get(selectedShapeId);
+            if (sd != null && sd.getType() == ShapeType.TEXT) {
+                Group g = shapeNodeMap.get(selectedShapeId);
+                if (g != null && !g.getChildren().isEmpty()) {
+                    g.getChildren().get(0).setVisible(false);
+                }
+            }
+        }
         shapeOverlayPane.getChildren().removeAll(handles);
         handles.clear();
     }
@@ -850,6 +1116,9 @@ public class WhiteboardPane extends StackPane {
             selectAction = SelectAction.NONE;
             ShapeData sd = shapeDataMap.get(selectedShapeId);
             if (sd != null && onShapeUpdated != null) {
+                if (sd.getType() == ShapeType.TEXT && sd.isAutoWidth()) {
+                    sd.setAutoWidth(false);
+                }
                 if (origSdCopy != null) recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), origSdCopy));
                 origSdCopy = null;
                 onShapeUpdated.accept(sd);
@@ -908,6 +1177,7 @@ public class WhiteboardPane extends StackPane {
         selectedShapeId = null;
         removeShape(id);
         if (onShapeRemoved != null) onShapeRemoved.accept(id);
+        if (onSelectionChanged != null) onSelectionChanged.accept(null);
     }
 
     /** Returns a full snapshot of current whiteboard state for late-joining students. */
@@ -959,12 +1229,16 @@ public class WhiteboardPane extends StackPane {
 
     // \u2500\u2500 Mode switch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     public void setDrawMode(DrawMode mode) {
+        if (editingTextId != null && (mode != DrawMode.SHAPE_TEXT && mode != DrawMode.SELECT)) {
+            commitEditing();
+        }
         this.drawMode = mode;
         boolean shapeOrSelect = (mode != DrawMode.FREEHAND && mode != DrawMode.ERASER);
         shapeOverlayPane.setMouseTransparent(!shapeOrSelect || !teacherMode);
         if (!shapeOrSelect) {
             clearHandles();
             selectedShapeId = null;
+            if (onSelectionChanged != null) onSelectionChanged.accept(null);
         }
     }
 

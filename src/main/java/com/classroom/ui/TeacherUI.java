@@ -337,10 +337,7 @@ public class TeacherUI {
         // ── MAIN TOOLBAR ───────────────────────────────────────────────────
         ColorPicker colorPicker = new ColorPicker(Color.BLACK);
         colorPicker.setTooltip(new Tooltip("Stroke Color"));
-        colorPicker.setOnAction(e -> {
-            whiteboardPane.setCurrentColor(colorPicker.getValue());
-            pptWhiteboardPane.setCurrentColor(colorPicker.getValue());
-        });
+        // Action will be set later to also trigger text formatting updates
 
         Slider widthSlider = new Slider(1, 12, 2);
         widthSlider.setShowTickLabels(true);
@@ -466,24 +463,10 @@ public class TeacherUI {
         ToggleButton ellipseTb  = shapeTool("Ellipse",       shapeGroup);
         ToggleButton lineTb     = shapeTool("Line",          shapeGroup);
         ToggleButton arrowTb    = shapeTool("Arrow",         shapeGroup);
-        ToggleButton textTb     = shapeTool("Text Box",      shapeGroup);
+        ToggleButton textTb     = shapeTool("Text",          shapeGroup);
         ToggleButton selectTb   = shapeTool("Select/Resize", shapeGroup);
         freehandTb.setSelected(true);
 
-        shapeGroup.selectedToggleProperty().addListener((obs, old, newT) -> {
-            if (newT == null) { freehandTb.setSelected(true); return; }
-            DrawMode m = DrawMode.FREEHAND;
-            if      (newT == freehandTb) m = DrawMode.FREEHAND;
-            else if (newT == eraserTb)   m = DrawMode.ERASER;
-            else if (newT == rectTb)     m = DrawMode.SHAPE_RECT;
-            else if (newT == ellipseTb)  m = DrawMode.SHAPE_ELLIPSE;
-            else if (newT == lineTb)     m = DrawMode.SHAPE_LINE;
-            else if (newT == arrowTb)    m = DrawMode.SHAPE_ARROW;
-            else if (newT == textTb)     m = DrawMode.SHAPE_TEXT;
-            else if (newT == selectTb)   m = DrawMode.SELECT;
-            whiteboardPane.setDrawMode(m);
-            pptWhiteboardPane.setDrawMode(m);
-        });
 
         Button deleteShapeBtn = new Button("Delete Shape");
         deleteShapeBtn.getStyleClass().add("btn-danger");
@@ -499,7 +482,174 @@ public class TeacherUI {
                 new Separator(javafx.geometry.Orientation.VERTICAL),
                 deleteShapeBtn);
         shapeToolbar.setAlignment(Pos.CENTER_LEFT);
-        shapeToolbar.getStyleClass().add("toolbar-shape");
+        shapeToolbar.getStyleClass().addAll("toolbar-shape", "floating-panel");
+
+        // ── TEXT FORMAT TOOLBAR ────────────────────────────────────────────
+        ComboBox<String> fontFamCombo = new ComboBox<>();
+        fontFamCombo.getItems().addAll("System", "Arial", "Courier New", "Times New Roman", "Verdana");
+        fontFamCombo.setValue("System");
+        fontFamCombo.setPrefWidth(120);
+
+        ComboBox<Double> fontSizeCombo = new ComboBox<>();
+        fontSizeCombo.getItems().addAll(12.0, 14.0, 16.0, 18.0, 24.0, 32.0, 48.0, 64.0);
+        fontSizeCombo.setValue(24.0);
+        fontSizeCombo.setPrefWidth(80);
+
+        ToggleButton boldTb = new ToggleButton("B");
+        boldTb.setStyle("-fx-font-weight: bold;");
+        ToggleButton italicTb = new ToggleButton("I");
+        italicTb.setStyle("-fx-font-style: italic;");
+        ToggleButton underlineTb = new ToggleButton("U");
+        underlineTb.setStyle("-fx-underline: true;");
+
+        ToggleGroup alignGroup = new ToggleGroup();
+        ToggleButton alignLeft = new ToggleButton("Left"); alignLeft.setToggleGroup(alignGroup); alignLeft.setSelected(true);
+        ToggleButton alignCenter = new ToggleButton("Center"); alignCenter.setToggleGroup(alignGroup);
+        ToggleButton alignRight = new ToggleButton("Right"); alignRight.setToggleGroup(alignGroup);
+
+        HBox textFormatToolbar = new HBox(8,
+                new Label("Font:"), fontFamCombo, fontSizeCombo,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                boldTb, italicTb, underlineTb,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                alignLeft, alignCenter, alignRight);
+        textFormatToolbar.setAlignment(Pos.CENTER_LEFT);
+        textFormatToolbar.getStyleClass().add("toolbar-text-format");
+        textFormatToolbar.setVisible(false);
+        textFormatToolbar.setManaged(false);
+
+        Runnable applyFormatting = () -> {
+            String fontFam = fontFamCombo.getValue();
+            double size = fontSizeCombo.getValue();
+            boolean isBold = boldTb.isSelected();
+            boolean isItalic = italicTb.isSelected();
+            boolean isUnderline = underlineTb.isSelected();
+            String align = "LEFT";
+            if (alignCenter.isSelected()) align = "CENTER";
+            if (alignRight.isSelected()) align = "RIGHT";
+            
+            Color c = colorPicker.getValue();
+            String hex = String.format("#%02X%02X%02X", (int)(c.getRed()*255), (int)(c.getGreen()*255), (int)(c.getBlue()*255));
+
+            WhiteboardPane active = getActivePane();
+            if (active != null) {
+                active.applyTextFormatting(fontFam, size, isBold, isItalic, isUnderline, align, hex);
+            }
+        };
+
+        fontFamCombo.setOnAction(e -> applyFormatting.run());
+        fontSizeCombo.setOnAction(e -> applyFormatting.run());
+        boldTb.setOnAction(e -> applyFormatting.run());
+        italicTb.setOnAction(e -> applyFormatting.run());
+        underlineTb.setOnAction(e -> applyFormatting.run());
+        alignGroup.selectedToggleProperty().addListener((obs, oldV, newV) -> {
+            if (newV != null) applyFormatting.run();
+        });
+
+        colorPicker.setOnAction(e -> {
+            whiteboardPane.setCurrentColor(colorPicker.getValue());
+            pptWhiteboardPane.setCurrentColor(colorPicker.getValue());
+            applyFormatting.run();
+        });
+
+        // ── PROPERTIES POPUP (Prompt 5) ────────────────────────────────────
+        HBox propertiesPopup = new HBox(10);
+        propertiesPopup.getStyleClass().add("floating-panel");
+        propertiesPopup.setAlignment(Pos.CENTER);
+        // This implicitly removes them from toolbar
+        propertiesPopup.getChildren().addAll(colorLbl, colorPicker, widthLbl, widthSlider, textFormatToolbar);
+        propertiesPopup.setOpacity(0.0);
+        propertiesPopup.setVisible(false);
+
+        Runnable updatePropertiesVisibility = () -> {
+            Toggle newT = shapeGroup.getSelectedToggle();
+            boolean showProps = false;
+            boolean showText = false;
+            
+            if (newT == rectTb || newT == ellipseTb || newT == lineTb || newT == arrowTb) {
+                showProps = true;
+            } else if (newT == textTb) {
+                showProps = true;
+                showText = true;
+            }
+            
+            WhiteboardPane active = getActivePane();
+            if (newT == selectTb && active != null && active.getSelectedShapeId() != null && active.getShapeDataMap().get(active.getSelectedShapeId()) != null && active.getShapeDataMap().get(active.getSelectedShapeId()).getType() == ShapeData.ShapeType.TEXT) {
+                showProps = true;
+                showText = true;
+            }
+
+            textFormatToolbar.setVisible(showText);
+            textFormatToolbar.setManaged(showText);
+            
+            if (showProps && !propertiesPopup.isVisible()) {
+                propertiesPopup.setVisible(true);
+                javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(150), propertiesPopup);
+                ft.setToValue(1.0);
+                ft.play();
+            } else if (!showProps && propertiesPopup.isVisible()) {
+                javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(150), propertiesPopup);
+                ft.setToValue(0.0);
+                ft.setOnFinished(e -> propertiesPopup.setVisible(false));
+                ft.play();
+            }
+        };
+
+        java.util.function.Consumer<String> selectionHandler = id -> {
+            WhiteboardPane active = getActivePane();
+            if (active == null) return;
+            
+            boolean isTextSelected = false;
+            if (id != null && id.equals("NEW_TEXT")) {
+                isTextSelected = true;
+            } else if (id != null) {
+                ShapeData sd = active.getShapeDataMap().get(id);
+                if (sd != null && sd.getType() == ShapeData.ShapeType.TEXT) {
+                    isTextSelected = true;
+                    // Temporarily disable actions while updating UI
+                    fontFamCombo.setOnAction(null);
+                    fontSizeCombo.setOnAction(null);
+                    
+                    fontFamCombo.setValue(sd.getFontFamily());
+                    fontSizeCombo.setValue(sd.getFontSize());
+                    boldTb.setSelected(sd.isBold());
+                    italicTb.setSelected(sd.isItalic());
+                    underlineTb.setSelected(sd.isUnderline());
+                    if ("CENTER".equals(sd.getTextAlignment())) alignCenter.setSelected(true);
+                    else if ("RIGHT".equals(sd.getTextAlignment())) alignRight.setSelected(true);
+                    else alignLeft.setSelected(true);
+                    colorPicker.setValue(Color.web(sd.getStrokeHex()));
+                    
+                    // Re-enable actions
+                    fontFamCombo.setOnAction(e -> applyFormatting.run());
+                    fontSizeCombo.setOnAction(e -> applyFormatting.run());
+                }
+            } else if (shapeGroup.getSelectedToggle() == textTb) {
+                isTextSelected = true;
+            }
+            
+            updatePropertiesVisibility.run();
+        };
+        
+        whiteboardPane.setOnSelectionChanged(selectionHandler);
+        pptWhiteboardPane.setOnSelectionChanged(selectionHandler);
+        
+        shapeGroup.selectedToggleProperty().addListener((obs, old, newT) -> {
+            if (newT == null) { freehandTb.setSelected(true); return; }
+            DrawMode m = DrawMode.FREEHAND;
+            if      (newT == freehandTb) m = DrawMode.FREEHAND;
+            else if (newT == eraserTb)   m = DrawMode.ERASER;
+            else if (newT == rectTb)     m = DrawMode.SHAPE_RECT;
+            else if (newT == ellipseTb)  m = DrawMode.SHAPE_ELLIPSE;
+            else if (newT == lineTb)     m = DrawMode.SHAPE_LINE;
+            else if (newT == arrowTb)    m = DrawMode.SHAPE_ARROW;
+            else if (newT == textTb)     m = DrawMode.SHAPE_TEXT;
+            else if (newT == selectTb)   m = DrawMode.SELECT;
+            whiteboardPane.setDrawMode(m);
+            pptWhiteboardPane.setDrawMode(m);
+            
+            updatePropertiesVisibility.run();
+        });
 
         // ── TAB 1: WHITEBOARD ──────────────────────────────────────────────
         javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
@@ -642,6 +792,8 @@ public class TeacherUI {
             boolean drawVisible = (newTab != codeTab && newTab != fileTab);
             toolbar.setVisible(drawVisible);     toolbar.setManaged(drawVisible);
             shapeToolbar.setVisible(drawVisible); shapeToolbar.setManaged(drawVisible);
+            textFormatToolbar.setVisible(drawVisible && shapeGroup.getSelectedToggle() == textTb); 
+            textFormatToolbar.setManaged(drawVisible && shapeGroup.getSelectedToggle() == textTb);
             
             if (syncTabsBtn.isSelected() && server != null) {
                 server.broadcast(new Message(MessageType.TAB_SWITCH, tabPane.getSelectionModel().getSelectedIndex(), "Teacher"));
@@ -650,12 +802,93 @@ public class TeacherUI {
         toolbar.setVisible(true);     toolbar.setManaged(true);
         shapeToolbar.setVisible(true); shapeToolbar.setManaged(true);
 
+        // ── NEW FLOATING UI (Prompt 3) ─────────────────────────────────────
+        HBox topNavPill = new HBox(5);
+        topNavPill.getStyleClass().add("floating-pill");
+        topNavPill.setAlignment(Pos.CENTER);
+        ToggleButton t1 = new ToggleButton("Whiteboard"); t1.getStyleClass().add("toggle-button");
+        ToggleButton t2 = new ToggleButton("PPT Sharing"); t2.getStyleClass().add("toggle-button");
+        ToggleButton t3 = new ToggleButton("Code Sharing"); t3.getStyleClass().add("toggle-button");
+        ToggleButton t4 = new ToggleButton("Files"); t4.getStyleClass().add("toggle-button");
+        ToggleGroup tabGroup = new ToggleGroup();
+        t1.setToggleGroup(tabGroup); t2.setToggleGroup(tabGroup); t3.setToggleGroup(tabGroup); t4.setToggleGroup(tabGroup);
+        topNavPill.getChildren().addAll(t1, t2, t3, t4);
+        t1.setSelected(true);
+        tabGroup.selectedToggleProperty().addListener((obs, old, newVal) -> {
+            if (newVal == t1) tabPane.getSelectionModel().select(0);
+            else if (newVal == t2) tabPane.getSelectionModel().select(1);
+            else if (newVal == t3) tabPane.getSelectionModel().select(2);
+            else if (newVal == t4) tabPane.getSelectionModel().select(3);
+        });
+        tabPane.getSelectionModel().selectedIndexProperty().addListener((obs, old, newVal) -> {
+            if (newVal.intValue() == 0) t1.setSelected(true);
+            else if (newVal.intValue() == 1) t2.setSelected(true);
+            else if (newVal.intValue() == 2) t3.setSelected(true);
+            else if (newVal.intValue() == 3) t4.setSelected(true);
+        });
+
+        HBox metadataBadge = new HBox(10);
+        metadataBadge.getStyleClass().add("floating-panel");
+        metadataBadge.setAlignment(Pos.CENTER_LEFT);
+        ToggleButton rosterToggle = new ToggleButton("👥 Students");
+        rosterToggle.getStyleClass().add("toggle-button");
+        // Moving nodes to metadataBadge removes them from topBar automatically
+        metadataBadge.getChildren().addAll(titleLabel, titleSep, roleLabel, ipLabel, themeBtn, stopButton, rosterToggle);
+        
+        HBox actionsBadge = new HBox(8);
+        actionsBadge.getStyleClass().add("floating-pill");
+        actionsBadge.setAlignment(Pos.CENTER_LEFT);
+        // Moving nodes to actionsBadge removes them from toolbar/topBar automatically
+        actionsBadge.getChildren().addAll(syncTabsBtn, undoBtn, redoBtn, clearBoard, clearAnnotations, zoomInBtn, zoomOutBtn);
+
         // ── ROOT ───────────────────────────────────────────────────────────
-        VBox topSection = new VBox(topBar, toolbar, shapeToolbar);
-        BorderPane root = new BorderPane();
-        root.setTop(topSection);
-        root.setLeft(leftPanel);
-        root.setCenter(tabPane);
+        javafx.scene.layout.StackPane root = new javafx.scene.layout.StackPane();
+        javafx.scene.layout.Pane uiOverlay = new javafx.scene.layout.Pane();
+        uiOverlay.setPickOnBounds(false); // Let clicks pass through to canvas
+        
+        // Positioning Bindings
+        topNavPill.layoutXProperty().bind(root.widthProperty().subtract(topNavPill.widthProperty()).divide(2));
+        topNavPill.setLayoutY(15);
+        metadataBadge.setLayoutX(15);
+        metadataBadge.setLayoutY(15);
+        actionsBadge.layoutXProperty().bind(root.widthProperty().subtract(actionsBadge.widthProperty()).subtract(15));
+        actionsBadge.setLayoutY(15);
+        
+        // Temporarily position the remaining old toolbars so they don't overlap the top badges
+        toolbar.setLayoutY(80);
+        shapeToolbar.layoutXProperty().bind(root.widthProperty().subtract(shapeToolbar.widthProperty()).divide(2));
+        shapeToolbar.layoutYProperty().bind(root.heightProperty().subtract(shapeToolbar.heightProperty()).subtract(24));
+        
+        propertiesPopup.layoutXProperty().bind(root.widthProperty().subtract(propertiesPopup.widthProperty()).divide(2));
+        propertiesPopup.layoutYProperty().bind(shapeToolbar.layoutYProperty().subtract(propertiesPopup.heightProperty()).subtract(15));
+        
+        leftPanel.getStyleClass().add("floating-panel");
+        leftPanel.setPrefWidth(250);
+        leftPanel.prefHeightProperty().bind(root.heightProperty().subtract(100));
+        leftPanel.setLayoutX(15);
+        leftPanel.setLayoutY(65);
+        
+        // Initial state off
+        leftPanel.setOpacity(0.0);
+        leftPanel.setVisible(false);
+        rosterToggle.setSelected(false);
+        
+        rosterToggle.selectedProperty().addListener((obs, oldVal, newVal) -> {
+            if (newVal) {
+                leftPanel.setVisible(true);
+                javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(150), leftPanel);
+                ft.setToValue(1.0);
+                ft.play();
+            } else {
+                javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(150), leftPanel);
+                ft.setToValue(0.0);
+                ft.setOnFinished(e -> leftPanel.setVisible(false));
+                ft.play();
+            }
+        });
+
+        uiOverlay.getChildren().addAll(metadataBadge, topNavPill, actionsBadge, toolbar, shapeToolbar, propertiesPopup, leftPanel);
+        root.getChildren().addAll(tabPane, uiOverlay);
 
         // ── PPT SERVICE ────────────────────────────────────────────────────
         pptService = new PptService();

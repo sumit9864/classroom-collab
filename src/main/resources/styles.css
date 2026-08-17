@@ -24,6 +24,7 @@
     cc-text-muted:    #4a5568;
     cc-input-bg:      #1a2035;
     cc-input-border:  #334155;
+    cc-glass-bg:      rgba(22, 27, 34, 0.85);
 
     -fx-font-family: "System";
     -fx-font-size: 13px;
@@ -33,6 +34,33 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    LABELS
    ═══════════════════════════════════════════════════════════════════════════ */
+.floating-panel {
+    -fx-background-color: cc-glass-bg;
+    -fx-background-radius: 12px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 12px;
+    -fx-border-width: 1px;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.3), 15, 0, 0, 4);
+    -fx-padding: 8px 12px;
+}
+
+.floating-pill {
+    -fx-background-color: cc-glass-bg;
+    -fx-background-radius: 24px;
+    -fx-border-color: cc-border;
+    -fx-border-radius: 24px;
+    -fx-border-width: 1px;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.2), 10, 0, 0, 2);
+    -fx-padding: 6px 12px;
+}
+
+.tab-pane > .tab-header-area {
+    -fx-padding: 0;
+    -fx-max-height: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LABELS
 .label {
     -fx-text-fill: cc-text;
 }
@@ -589,19 +617,12 @@
 /* ── Shape tools toolbar ─────────────────────────────────────────────────── */
 .toolbar-shape {
     -fx-background-color: cc-surface;
-    -fx-border-color: cc-border;
-    -fx-border-width: 0 0 1 0;
     -fx-padding: 5px 14px;
 }
 
 /* ── Left student panel ──────────────────────────────────────────────────── */
 .left-panel {
-    -fx-background-color: cc-surface;
-    -fx-border-color: cc-border;
-    -fx-border-width: 0 1 0 0;
     -fx-padding: 14px 12px;
-    -fx-min-width: 190px;
-    -fx-pref-width: 200px;
 }
 
 /* ── PPT slide controls ──────────────────────────────────────────────────── */

@@ -359,11 +359,28 @@ public class PptService {
             case TEXT -> {
                 XSLFTextBox tb = slide.createTextBox();
                 tb.setAnchor(anchor);
+                tb.clearText(); // Remove default paragraphs
                 XSLFTextParagraph para = tb.addNewTextParagraph();
+                
+                if ("CENTER".equals(sd.getTextAlignment())) {
+                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.CENTER);
+                } else if ("RIGHT".equals(sd.getTextAlignment())) {
+                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.RIGHT);
+                } else {
+                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.LEFT);
+                }
+                if (sd.getLineHeight() > 0) {
+                    para.setLineSpacing(sd.getLineHeight() * 100.0); // POI expects percentage for multiplier
+                }
+                
                 XSLFTextRun run = para.addNewTextRun();
                 run.setText(sd.getText() != null ? sd.getText() : "");
                 run.setFontColor(color);
                 run.setFontSize(sd.getFontSize());
+                run.setFontFamily(sd.getFontFamily());
+                run.setBold(sd.isBold());
+                run.setItalic(sd.isItalic());
+                run.setUnderlined(sd.isUnderline());
             }
         }
     }
