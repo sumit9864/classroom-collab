@@ -50,15 +50,34 @@ public class WhiteboardPane extends StackPane {
     private boolean annotationMode = false;
     private DrawMode drawMode      = DrawMode.FREEHAND;
     private Color  currentColor       = Color.BLACK;
-    private Color  canvasBgColor      = Color.WHITE;        // canvas fill (theme-aware)
-    private String containerBgStyle   = "#e0e0e0";          // outer pane bg (theme-aware)
+    private Color  canvasBgColor      = Color.WHITE;
+    private boolean isDarkTheme       = false;
     private double strokeWidth     = 2.0;
+    private final javafx.beans.property.DoubleProperty zoomProperty = new javafx.beans.property.SimpleDoubleProperty(1.0);
+    public javafx.beans.property.DoubleProperty zoomProperty() { return zoomProperty; }
     private double zoomLevel       = 1.0;
-    // Scale transform with pivot at (0,0) — keeps the Group's bounds non-negative
-    // so the centering StackPane positions the canvas symmetrically (no left/top bias).
+    
+    private double panX = 0;
+    private double panY = 0;
+
     private final javafx.scene.transform.Scale scaleTransform =
             new javafx.scene.transform.Scale(1, 1, 0, 0);
+    private final javafx.scene.transform.Translate panTransform = 
+            new javafx.scene.transform.Translate(0, 0);
+            
     private boolean isTransparentBackground = false;
+    private Canvas gridCanvas;
+    private Pane workspace;
+    private javafx.scene.control.Label emptyStateHint;
+    private boolean toolPicked = false;
+    
+    public void notifyToolPicked() {
+        toolPicked = true;
+        if (emptyStateHint != null) {
+            emptyStateHint.setVisible(false);
+        }
+    }
+
 
     // ── Unified Action History ────────────────────────────────────────────────
     public static class BoardAction {
@@ -83,6 +102,16 @@ public class WhiteboardPane extends StackPane {
     private final LinkedList<BoardAction> history   = new LinkedList<>();
     private final LinkedList<BoardAction> redoStack = new LinkedList<>();
     private boolean isUndoRedo = false;
+    
+    private final javafx.beans.property.BooleanProperty canUndoProperty = new javafx.beans.property.SimpleBooleanProperty(false);
+    public javafx.beans.property.BooleanProperty canUndoProperty() { return canUndoProperty; }
+    private final javafx.beans.property.BooleanProperty canRedoProperty = new javafx.beans.property.SimpleBooleanProperty(false);
+    public javafx.beans.property.BooleanProperty canRedoProperty() { return canRedoProperty; }
+    
+    private void updateUndoRedoProps() {
+        canUndoProperty.set(!history.isEmpty());
+        canRedoProperty.set(!redoStack.isEmpty());
+    }
 
     // ── Serializable full-state snapshot for late-join sync ───────────────────
     public static class FullState implements java.io.Serializable {
@@ -185,7 +214,6 @@ public class WhiteboardPane extends StackPane {
     private long lastShapeDragNs = 0L;
     private static final long SHAPE_DRAG_INTERVAL_NS = 16_000_000L;
 
-    // ── Constructor ───────────────────────────────────────────────────────────
     public WhiteboardPane(boolean teacherMode, Consumer<StrokeData> onStrokeDrawn) {
         this.teacherMode   = teacherMode;
         this.onStrokeDrawn = onStrokeDrawn;
@@ -197,28 +225,165 @@ public class WhiteboardPane extends StackPane {
 
         progressOverlayCanvas = new Canvas(800, 500);
         progressGc = progressOverlayCanvas.getGraphicsContext2D();
-        progressOverlayCanvas.setMouseTransparent(true); // never captures mouse events
+        progressOverlayCanvas.setMouseTransparent(true);
 
         shapeOverlayPane = new Pane();
         shapeOverlayPane.setMinSize(800, 500);
         shapeOverlayPane.setPrefSize(800, 500);
         shapeOverlayPane.setMaxSize(800, 500);
-        // FREEHAND mode: overlay is transparent so canvas receives events
         shapeOverlayPane.setMouseTransparent(true);
 
-        getChildren().addAll(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
-        setStyle("-fx-background-color: " + containerBgStyle + ";");
-        setMinSize(800, 500);
-        setPrefSize(800, 500);
-        setMaxSize(800, 500);
-        // Register the pivot-(0,0) Scale transform once; setZoom() only updates its x/y values.
-        this.getTransforms().add(scaleTransform);
+        StackPane pageWrapper = new StackPane(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
+        pageWrapper.setMinSize(800, 500);
+        pageWrapper.setPrefSize(800, 500);
+        pageWrapper.setMaxSize(800, 500);
+        pageWrapper.getStyleClass().add("page");
+        
+        Group zoomGroup = new Group(pageWrapper);
+        zoomGroup.getTransforms().addAll(panTransform, scaleTransform);
+        
+        gridCanvas = new Canvas();
+        gridCanvas.widthProperty().bind(widthProperty());
+        gridCanvas.heightProperty().bind(heightProperty());
+        widthProperty().addListener(e -> drawWorkspaceBackground());
+        heightProperty().addListener(e -> drawWorkspaceBackground());
+        
+        emptyStateHint = new javafx.scene.control.Label("Pick a tool to start drawing");
+        emptyStateHint.setStyle("-fx-text-fill: #9ca3af; -fx-font-size: 16px;");
+        emptyStateHint.setMouseTransparent(true);
+
+        workspace = new Pane(gridCanvas, zoomGroup, emptyStateHint);
+        workspace.getStyleClass().add("workspace");
+        
+        getChildren().add(workspace);
+        
+        // Handle Empty State Centering
+        workspace.widthProperty().addListener((obs, o, n) -> {
+            emptyStateHint.setLayoutX((n.doubleValue() - emptyStateHint.prefWidth(-1)) / 2);
+        });
+        workspace.heightProperty().addListener((obs, o, n) -> {
+            emptyStateHint.setLayoutY((n.doubleValue() - emptyStateHint.prefHeight(-1)) / 2);
+        });
+
+        setupPanAndZoom();
 
         redrawAll();
 
         if (teacherMode) {
             setupCanvasHandlers();
             setupOverlayHandlers();
+        }
+        
+        // Zoom to fit on first layout
+        widthProperty().addListener(new javafx.beans.value.ChangeListener<Number>() {
+            @Override
+            public void changed(javafx.beans.value.ObservableValue<? extends Number> obs, Number oldV, Number newV) {
+                if (newV.doubleValue() > 0 && oldV.doubleValue() == 0) {
+                    zoomToFit();
+                    widthProperty().removeListener(this);
+                }
+            }
+        });
+    }
+    
+    private void setupPanAndZoom() {
+        workspace.setOnScroll(e -> {
+            if (e.isControlDown()) {
+                e.consume();
+                double zoomDelta = e.getDeltaY() > 0 ? 0.1 : -0.1;
+                double newZoom = zoomLevel + zoomDelta;
+                newZoom = Math.max(0.25, Math.min(4.0, newZoom));
+                
+                if (newZoom != zoomLevel) {
+                    double f = (newZoom / zoomLevel) - 1;
+                    panX -= (e.getX() - panX) * f;
+                    panY -= (e.getY() - panY) * f;
+                    zoomLevel = newZoom;
+                    updateZoomAndPan();
+                }
+            }
+        });
+
+        // Middle-mouse or Space+drag panning
+        class PanState { boolean panning; double anchorX, anchorY, startPanX, startPanY; }
+        PanState ps = new PanState();
+        
+        workspace.setOnMousePressed(e -> {
+            if (e.isMiddleButtonDown() || (e.isPrimaryButtonDown() && e.isAltDown())) { // Allow Alt+Drag if Space is hard to hook
+                ps.panning = true;
+                ps.anchorX = e.getX();
+                ps.anchorY = e.getY();
+                ps.startPanX = panX;
+                ps.startPanY = panY;
+                e.consume();
+            }
+        });
+        workspace.setOnMouseDragged(e -> {
+            if (ps.panning) {
+                panX = ps.startPanX + (e.getX() - ps.anchorX);
+                panY = ps.startPanY + (e.getY() - ps.anchorY);
+                updateZoomAndPan();
+                e.consume();
+            }
+        });
+        workspace.setOnMouseReleased(e -> {
+            ps.panning = false;
+        });
+    }
+
+    private void updateZoomAndPan() {
+        zoomProperty.set(zoomLevel);
+        scaleTransform.setX(zoomLevel);
+        scaleTransform.setY(zoomLevel);
+        panTransform.setX(panX);
+        panTransform.setY(panY);
+        drawWorkspaceBackground();
+    }
+    
+    public void zoomToFit() {
+        double cw = getCanvasW();
+        double ch = getCanvasH();
+        double ww = getWidth();
+        double wh = getHeight();
+        if (cw == 0 || ch == 0 || ww == 0 || wh == 0) return;
+        
+        double padding = 40;
+        double scaleX = (ww - padding * 2) / cw;
+        double scaleY = (wh - padding * 2) / ch;
+        double newZoom = Math.min(scaleX, scaleY);
+        newZoom = Math.max(0.25, Math.min(4.0, newZoom));
+        
+        zoomLevel = newZoom;
+        panX = (ww - (cw * zoomLevel)) / 2.0;
+        panY = (wh - (ch * zoomLevel)) / 2.0;
+        updateZoomAndPan();
+    }
+
+    private void drawWorkspaceBackground() {
+        if (gridCanvas == null) return;
+        GraphicsContext gc = gridCanvas.getGraphicsContext2D();
+        double w = getWidth();
+        double h = getHeight();
+        gc.clearRect(0, 0, w, h);
+        
+        if (isTransparentBackground) return;
+        
+        gc.setFill(Color.web(isDarkTheme ? "#14161A" : "#F8F9FA"));
+        gc.fillRect(0, 0, w, h);
+        
+        gc.setFill(Color.web(isDarkTheme ? "#30343E" : "#D1D5DB"));
+        double spacing = 20 * zoomLevel;
+        if (spacing < 5) return; 
+        
+        double startX = panX % spacing;
+        if (startX < 0) startX += spacing;
+        double startY = panY % spacing;
+        if (startY < 0) startY += spacing;
+        
+        for (double x = startX; x < w; x += spacing) {
+            for (double y = startY; y < h; y += spacing) {
+                gc.fillOval(x - 0.5, y - 0.5, 1.5, 1.5);
+            }
         }
     }
 
@@ -1257,6 +1422,7 @@ public class WhiteboardPane extends StackPane {
         history.addLast(action);
         if (history.size() > 100) history.removeFirst();
         redoStack.clear();
+        updateUndoRedoProps();
     }
 
     public void recordStroke(StrokeData stroke) {
@@ -1366,6 +1532,7 @@ public class WhiteboardPane extends StackPane {
         List<String> toRemove = shapeDataMap.values().stream()
                 .filter(s -> !s.isAnnotation()).map(ShapeData::getId).collect(Collectors.toList());
         toRemove.forEach(this::silentRemoveShape);
+        updateUndoRedoProps();
     }
 
     public void clearAnnotations() {
@@ -1378,6 +1545,7 @@ public class WhiteboardPane extends StackPane {
         List<String> toRemove = shapeDataMap.values().stream()
                 .filter(ShapeData::isAnnotation).map(ShapeData::getId).collect(Collectors.toList());
         toRemove.forEach(this::silentRemoveShape);
+        updateUndoRedoProps();
     }
 
     /**
@@ -1402,6 +1570,7 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
+        updateUndoRedoProps();
         return getFullState();
     }
 
@@ -1426,6 +1595,7 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
+        updateUndoRedoProps();
         return getFullState();
     }
 
@@ -1455,13 +1625,18 @@ public class WhiteboardPane extends StackPane {
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         } else {
-            wbGc.setFill(canvasBgColor);
+            wbGc.setFill(isDarkTheme ? Color.web("#20232A") : Color.WHITE);
             wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
         }
         annGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         annGc.beginPath();
         for (BoardAction a : history) {
             if (a.type == BoardAction.Type.STROKE) drawStrokeOnly(a.stroke);
+        }
+        
+        boolean hasContent = !shapeDataMap.isEmpty() || !history.isEmpty();
+        if (emptyStateHint != null) {
+            emptyStateHint.setVisible(!hasContent && !toolPicked);
         }
     }
 
@@ -1473,8 +1648,20 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setMinSize(w, h);
         shapeOverlayPane.setPrefSize(w, h);
         shapeOverlayPane.setMaxSize(w, h);
-        setMinSize(w, h); setPrefSize(w, h); setMaxSize(w, h);
+        
+        if (workspace != null) {
+            for (javafx.scene.Node n : workspace.getChildren()) {
+                if (n instanceof Group) {
+                    Group g = (Group)n;
+                    if (!g.getChildren().isEmpty() && g.getChildren().get(0) instanceof StackPane) {
+                        StackPane pw = (StackPane)g.getChildren().get(0);
+                        pw.setMinSize(w, h); pw.setPrefSize(w, h); pw.setMaxSize(w, h);
+                    }
+                }
+            }
+        }
         redrawAll();
+        zoomToFit();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1503,16 +1690,18 @@ public class WhiteboardPane extends StackPane {
 
     public double getZoom() { return zoomLevel; }
     public void setZoom(double level) {
-        // Round to 1 decimal place to prevent floating-point drift (e.g. 0.999... or 0.7001...)
-        level = Math.round(level * 10.0) / 10.0;
-        if (level < 0.5) level = 0.5;
-        if (level > 3.0) level = 3.0;
-        this.zoomLevel = level;
-        // Use the pivot-(0,0) Scale transform instead of setScaleX/Y.
-        // setScaleX/Y pivots from node centre, pushing visual bounds into negative
-        // coordinates in the parent Group and breaking the centering StackPane layout.
-        scaleTransform.setX(level);
-        scaleTransform.setY(level);
+        level = Math.max(0.25, Math.min(4.0, level));
+        if (level == zoomLevel) return;
+        
+        double cx = getWidth() / 2.0;
+        double cy = getHeight() / 2.0;
+        double f = (level / zoomLevel) - 1;
+        
+        panX -= (cx - panX) * f;
+        panY -= (cy - panY) * f;
+        
+        zoomLevel = level;
+        updateZoomAndPan();
     }
     
     public void setTransparentBackground(boolean transparent) {
@@ -1520,8 +1709,9 @@ public class WhiteboardPane extends StackPane {
         if (transparent) {
             setStyle("-fx-background-color: transparent;");
         } else {
-            setStyle("-fx-background-color: " + containerBgStyle + ";");
+            setStyle(""); // The background is handled by drawWorkspaceBackground now
         }
+        drawWorkspaceBackground();
         redrawAll();
     }
 
@@ -1533,10 +1723,8 @@ public class WhiteboardPane extends StackPane {
      */
     public void setCanvasBgColor(Color canvas, String containerHex) {
         this.canvasBgColor    = canvas;
-        this.containerBgStyle = containerHex;
-        if (!isTransparentBackground) {
-            setStyle("-fx-background-color: " + containerHex + ";");
-        }
+        this.isDarkTheme      = containerHex.equals("#0d1117") || containerHex.contains("14161A");
+        drawWorkspaceBackground();
         redrawAll();
     }
 }
