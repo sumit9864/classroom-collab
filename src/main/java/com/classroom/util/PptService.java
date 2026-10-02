@@ -249,6 +249,22 @@ public class PptService {
         return getCurrentSlideData();
     }
 
+    /** Goes to the specified slide and returns its SlideData. */
+    public SlideData goTo(int index) {
+        if (!loaded || index < 0 || index >= totalSlides) return null;
+        currentIndex = index;
+        updateStrongWindow();
+        return getCurrentSlideData();
+    }
+    
+    /** Gets SlideData for a specific index without changing current index. */
+    public SlideData getSlideData(int index) {
+        if (!loaded || index < 0 || index >= totalSlides) return null;
+        byte[] bytes = getSlideBytes(index);
+        if (bytes == null) return null;
+        return new SlideData(bytes, index, totalSlides);
+    }
+
     public boolean isLoaded()      { return loaded; }
     public int getCurrentIndex()   { return currentIndex; }
     public int getTotalSlides()    { return totalSlides; }

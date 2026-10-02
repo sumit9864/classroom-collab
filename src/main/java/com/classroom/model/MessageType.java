@@ -33,5 +33,8 @@ public enum MessageType {
     FILE_SHARE_COMPLETE, // Teacher → All Students: FileShareData signals transfer finished
 
     // Phase 6 — Tab Sync
-    TAB_SWITCH           // Teacher → All Students: Integer index of the currently active tab (or -1 to unlock)
+    TAB_SWITCH,          // Teacher → All Students: Integer index of the currently active tab (or -1 to unlock)
+
+    // Phase 7 — Handshake Hardening
+    AUTH_FAILURE         // Teacher → Student: join rejected (payload = reason)
 }

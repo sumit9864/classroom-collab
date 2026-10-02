@@ -1,6 +1,9 @@
 package com.classroom.ui;
 
 import com.classroom.model.CodeData;
+import com.classroom.util.SyntaxHighlighter;
+import javafx.scene.control.ComboBox;
+
 import com.classroom.model.FileShareData;
 import com.classroom.model.Message;
 import com.classroom.model.MessageType;
@@ -73,13 +76,17 @@ public class TeacherUI {
     private Scene   mainScene;
     private javafx.scene.layout.StackPane toastPane;
     private Tooltip statusDotTooltip;
-    private Label ipLabel;
+    private Label ipLabel; // Unused now, keeping for diff
     private String tooltipIps = "Unknown";
 
     // ── Dynamic refs updated on theme switch ───────────────────────────────
-    private TextArea codeEditor;
-    private TextArea lineNumbers;
-    private HBox     codeArea;
+    private org.fxmisc.richtext.CodeArea codeEditor;
+    private ComboBox<String> languageSelector;
+    private String currentLanguage = "Plain Text";
+    private int codeFontSize = 14;
+    private javafx.animation.PauseTransition highlightDebounce = new javafx.animation.PauseTransition(javafx.util.Duration.millis(150));
+    private javafx.animation.PauseTransition codeShareDebounce = new javafx.animation.PauseTransition(javafx.util.Duration.millis(300));
+    private Label codeStatusLabel;
 
     // ── Core state ─────────────────────────────────────────────────────────
     private final Stage stage;
@@ -91,7 +98,11 @@ public class TeacherUI {
     // Phase 3 — PPT
     private PptService pptService;
 
-    private Label      slideCountLabel;
+    private TextField  jumpField;
+    private Label      jumpTotalLabel;
+    private ListView<Image> thumbnailList;
+    private Map<Integer, Image> thumbnailCache = new HashMap<>();
+
     private Button     prevSlideBtn;
     private Button     nextSlideBtn;
 
@@ -143,7 +154,7 @@ public class TeacherUI {
         this.stage = stage;
         this.server = server;
         this.studentListView = new ListView<>();
-        studentListView.setPlaceholder(new Label("No students connected"));
+        // moved to show()
     }
 
     public void setServer(TeacherServer server) { this.server = server; }
@@ -154,19 +165,60 @@ public class TeacherUI {
         if (mainScene == null) return;
         mainScene.getStylesheets().clear();
         mainScene.getStylesheets().add(getClass().getResource(dark ? THEME_DARK : THEME_LIGHT).toExternalForm());
-        mainScene.getStylesheets().add(getClass().getResource("/style.css").toExternalForm());
         whiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
                                         dark ? DARK_CONTAINER : LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(dark ? DARK_CANVAS : LIGHT_CANVAS,
                                            dark ? DARK_CONTAINER : LIGHT_CONTAINER);
-        if (codeEditor  != null) codeEditor .setStyle(dark ? CODE_EDITOR_DARK : CODE_EDITOR_LIGHT);
-        if (lineNumbers != null) lineNumbers.setStyle(dark ? CODE_NUMS_DARK   : CODE_NUMS_LIGHT);
-        if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
+        if (codeEditor != null) codeEditor.setStyle("-fx-font-family: monospace; -fx-font-size: " + codeFontSize + "px;");
     }
 
 
 
     // ── show() ─────────────────────────────────────────────────────────────
+        private void showToastWithUndo(String message) {
+        if (toastPane == null) return;
+        Label msgLbl = new Label(message + " — ");
+        msgLbl.setStyle("-fx-text-fill: white; -fx-font-weight: bold;");
+        Hyperlink undoLink = new Hyperlink("Undo");
+        undoLink.setStyle("-fx-text-fill: #93c5fd; -fx-padding: 0; -fx-border-color: transparent; -fx-underline: true; -fx-font-weight: bold;");
+        
+        HBox toastBox = new HBox(msgLbl, undoLink);
+        toastBox.setAlignment(Pos.CENTER);
+        toastBox.getStyleClass().add("toast-label");
+        
+        javafx.scene.layout.StackPane.setAlignment(toastBox, Pos.BOTTOM_CENTER);
+        javafx.scene.layout.StackPane.setMargin(toastBox, new javafx.geometry.Insets(0, 0, 40, 0));
+        
+        undoLink.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane != null) {
+                WhiteboardPane.FullState afterUndo = pane.undo();
+                if (afterUndo != null && server != null) {
+                    server.broadcast(new Message(MessageType.UNDO, afterUndo, getActiveSender()));
+                }
+                toastPane.getChildren().remove(toastBox);
+            }
+        });
+        
+        toastPane.getChildren().add(toastBox);
+        
+        javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(300), toastBox);
+        ft.setFromValue(0);
+        ft.setToValue(1);
+        ft.setDelay(javafx.util.Duration.millis(100));
+        ft.play();
+        
+        javafx.animation.PauseTransition pt = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(4.0));
+        pt.setOnFinished(e -> {
+            javafx.animation.FadeTransition fadeOut = new javafx.animation.FadeTransition(javafx.util.Duration.millis(300), toastBox);
+            fadeOut.setFromValue(1);
+            fadeOut.setToValue(0);
+            fadeOut.setOnFinished(e2 -> toastPane.getChildren().remove(toastBox));
+            fadeOut.play();
+        });
+        pt.play();
+    }
+
     public void show() {
 
         // ── TOP BAR / HEADER ITEMS ───────────────────────────────────────────────
@@ -205,14 +257,18 @@ public class TeacherUI {
             }
         });
 
-        javafx.scene.control.CheckMenuItem themeItem = new javafx.scene.control.CheckMenuItem("Dark Mode");
-        themeItem.setSelected(isDarkTheme);
-        themeItem.setOnAction(e -> {
-            isDarkTheme = themeItem.isSelected();
+        Button themeBtn = new Button("", Icons.of(isDarkTheme ? "fth-sun" : "fth-moon", 16));
+        themeBtn.setTooltip(new Tooltip("Toggle Theme"));
+        themeBtn.getStyleClass().add("btn-subtle");
+        themeBtn.setOnAction(e -> {
+            isDarkTheme = !isDarkTheme;
+            themeBtn.setGraphic(Icons.of(isDarkTheme ? "fth-sun" : "fth-moon", 16));
             applyTheme(isDarkTheme);
         });
 
-        javafx.scene.control.CheckMenuItem syncItem = new javafx.scene.control.CheckMenuItem("Lock Tabs");
+        ToggleButton syncItem = new ToggleButton("Lock view");
+        syncItem.setGraphic(Icons.of("fth-lock", 16));
+        syncItem.getStyleClass().add("toggle-button");
         syncItem.setSelected(false);
         syncItem.setOnAction(e -> {
             if (syncItem.isSelected()) {
@@ -222,15 +278,11 @@ public class TeacherUI {
                 showToast("Tabs locked");
             } else {
                 if (server != null) {
-                    server.broadcast(new Message(MessageType.TAB_SWITCH, -1, "Teacher")); // -1 to unlock
+                    server.broadcast(new Message(MessageType.TAB_SWITCH, -1, "Teacher"));
                 }
                 showToast("Tabs unlocked");
             }
         });
-
-        javafx.scene.control.MenuButton overflowMenu = new javafx.scene.control.MenuButton("⋯");
-        overflowMenu.getStyleClass().add("btn-subtle");
-        overflowMenu.getItems().addAll(themeItem, syncItem);
 
         // ── LEFT PANEL ─────────────────────────────────────────────────────
         Label listHeader = new Label("Connected Students");
@@ -324,11 +376,13 @@ public class TeacherUI {
         });
 
         ToggleGroup modeGroup = new ToggleGroup();
-        ToggleButton whiteboardMode = new ToggleButton("Whiteboard");
+        ToggleButton whiteboardMode = new ToggleButton("Whiteboard layer");
+        whiteboardMode.setTooltip(new Tooltip("Draw on a blank whiteboard layer"));
         whiteboardMode.getStyleClass().addAll("segmented", "segmented-left");
         whiteboardMode.setToggleGroup(modeGroup);
         whiteboardMode.setSelected(true);
-        ToggleButton annotateMode = new ToggleButton("Annotate");
+        ToggleButton annotateMode = new ToggleButton("Draw on slide");
+        annotateMode.setTooltip(new Tooltip("Draw directly on the PPT slide"));
         annotateMode.getStyleClass().addAll("segmented", "segmented-right");
         annotateMode.setToggleGroup(modeGroup);
         modeGroup.selectedToggleProperty().addListener((obs, oldT, newT) -> {
@@ -380,8 +434,6 @@ public class TeacherUI {
         modeBox.setAlignment(Pos.CENTER);
         
         contextBar.getChildren().addAll(
-            modeBox,
-            new Separator(javafx.geometry.Orientation.VERTICAL),
             contextSizeLbl, sizeCombo,
             spacerContext,
             zoomOutBtn, zoomLabel, zoomInBtn, zoomFitBtn
@@ -406,52 +458,69 @@ public class TeacherUI {
                 server.broadcast(new Message(MessageType.REDO, afterRedo, getActiveSender()));
             }
         });
-        Button clearBoard = iconButton("Clear Board", "fth-layers");
-        clearBoard.getStyleClass().add("btn-subtle");
-        clearBoard.setOnAction(e -> {
-            WhiteboardPane pane = getActivePane();
-            if (pane == null) return;
-            if (confirmDestructive("Clear Board", "This removes all content for everyone.", "This can't be undone.", "Clear")) {
-                pane.clearWhiteboard();
-                if (server != null) server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, getActiveSender()));
-                showToast("Board cleared");
-            }
-        });
-        Button clearAnnotations = iconButton("Clear Annotations", "fth-edit-3");
-        clearAnnotations.getStyleClass().add("btn-subtle");
-        clearAnnotations.setOnAction(e -> {
-            WhiteboardPane pane = getActivePane();
-            if (pane == null) return;
-            if (confirmDestructive("Clear Annotations", "This removes all annotations for everyone.", "This can't be undone.", "Clear")) {
-                pane.clearAnnotations();
-                if (server != null) server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, getActiveSender()));
-                showToast("Annotations cleared");
-            }
-        });
-
-
         ToggleGroup shapeGroup = new ToggleGroup();
         ToggleButton freehandTb = shapeTool("Freehand", "fth-edit-2", shapeGroup);
+        freehandTb.setTooltip(new Tooltip("Freehand (P)"));
         ToggleButton eraserTb   = shapeTool("Eraser", "M15.14 3c-.51 0-1.02.2-1.41.59L2.59 14.73c-.78.77-.78 2.04 0 2.83L5.43 20.4c.39.39.9.59 1.41.59h14.16v-2H12.6l7.85-7.85c.78-.77.78-2.04 0-2.83l-3.9-3.9A1.97 1.97 0 0 0 15.14 3z", shapeGroup);
+        eraserTb.setTooltip(new Tooltip("Eraser (E)"));
         ToggleButton rectTb     = shapeTool("Rectangle", "fth-square", shapeGroup);
+        rectTb.setTooltip(new Tooltip("Rectangle (R)"));
         ToggleButton ellipseTb  = shapeTool("Ellipse", "fth-circle", shapeGroup);
+        ellipseTb.setTooltip(new Tooltip("Ellipse (O)"));
         ToggleButton lineTb     = shapeTool("Line", "M3 19L19 3L21 5L5 21Z", shapeGroup);
+        lineTb.setTooltip(new Tooltip("Line (L)"));
         ToggleButton arrowTb    = shapeTool("Arrow", "fth-arrow-up-right", shapeGroup);
+        arrowTb.setTooltip(new Tooltip("Arrow (A)"));
         ToggleButton textTb     = shapeTool("Text", "fth-type", shapeGroup);
+        textTb.setTooltip(new Tooltip("Text (T)"));
         ToggleButton selectTb   = shapeTool("Select/Resize", "fth-mouse-pointer", shapeGroup);
+        selectTb.setTooltip(new Tooltip("Select (V)"));
         freehandTb.setSelected(true);
+        
+        undoBtn.setTooltip(new Tooltip("Undo (Ctrl+Z)"));
+        redoBtn.setTooltip(new Tooltip("Redo (Ctrl+Y)"));
 
-        Button deleteShapeBtn = iconButton("Delete Shape", "fth-trash-2");
-        deleteShapeBtn.getStyleClass().add("btn-danger");
-        deleteShapeBtn.setOnAction(e -> {
+        javafx.scene.control.MenuButton clearMenu = new javafx.scene.control.MenuButton();
+        clearMenu.setGraphic(Icons.of("fth-trash-2", 18));
+        clearMenu.getStyleClass().addAll("tool-btn", "btn-danger");
+        clearMenu.setTooltip(new Tooltip("Clear..."));
+        
+        javafx.scene.control.MenuItem miDelShape = new javafx.scene.control.MenuItem("Delete selected shape");
+        miDelShape.setOnAction(e -> {
             WhiteboardPane pane = getActivePane();
             if (pane != null) pane.deleteSelectedShape();
         });
+        
+        javafx.scene.control.MenuItem miClearDraw = new javafx.scene.control.MenuItem("Clear drawing");
+        miClearDraw.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.clearWhiteboard();
+            if (server != null) server.broadcast(new Message(MessageType.WHITEBOARD_CLEAR, null, getActiveSender()));
+            showToastWithUndo("Board cleared");
+        });
+        
+        javafx.scene.control.MenuItem miClearAnn = new javafx.scene.control.MenuItem("Clear annotations");
+        miClearAnn.setOnAction(e -> {
+            WhiteboardPane pane = getActivePane();
+            if (pane == null) return;
+            pane.clearAnnotations();
+            if (server != null) server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, getActiveSender()));
+            showToastWithUndo("Annotations cleared");
+        });
+        
+        clearMenu.getItems().addAll(miDelShape, miClearDraw, miClearAnn);
 
         this.toolbar = new VBox(2,
-                freehandTb, eraserTb, rectTb, ellipseTb, lineTb, arrowTb, textTb, selectTb,
+                freehandTb, eraserTb, 
                 new Separator(javafx.geometry.Orientation.HORIZONTAL),
-                undoBtn, redoBtn, deleteShapeBtn, clearBoard, clearAnnotations);
+                rectTb, ellipseTb, lineTb, arrowTb, 
+                new Separator(javafx.geometry.Orientation.HORIZONTAL),
+                textTb, selectTb,
+                new Separator(javafx.geometry.Orientation.HORIZONTAL),
+                undoBtn, redoBtn, 
+                new Separator(javafx.geometry.Orientation.HORIZONTAL),
+                clearMenu);
         toolbar.setAlignment(Pos.TOP_CENTER);
         toolbar.setPadding(new Insets(10, 0, 10, 0));
         toolbar.getStyleClass().add("toolbar-vertical");
@@ -459,30 +528,6 @@ public class TeacherUI {
         toolbar.setMinWidth(56);
         toolbar.setMaxWidth(56);
 
-        javafx.scene.control.MenuButton moreBtn = new javafx.scene.control.MenuButton();
-        org.kordamp.ikonli.javafx.FontIcon moreIcon = new org.kordamp.ikonli.javafx.FontIcon("fth-more-horizontal");
-        moreIcon.setIconSize(18);
-        moreIcon.getStyleClass().add("icon-svg");
-        moreBtn.setGraphic(moreIcon);
-        moreBtn.getStyleClass().addAll("tool-btn", "btn-subtle");
-        moreBtn.setPrefSize(38, 38);
-        
-        javafx.scene.control.MenuItem miClearBoard = new javafx.scene.control.MenuItem("Clear Board"); miClearBoard.setOnAction(clearBoard.getOnAction());
-        javafx.scene.control.MenuItem miClearAnn = new javafx.scene.control.MenuItem("Clear Annotations"); miClearAnn.setOnAction(clearAnnotations.getOnAction());
-        moreBtn.getItems().addAll(miClearBoard, miClearAnn);
-
-        stage.heightProperty().addListener((obs, oldV, newV) -> {
-            toolbar.getChildren().clear();
-            toolbar.getChildren().addAll(freehandTb, eraserTb, rectTb, ellipseTb, lineTb, arrowTb, textTb, selectTb,
-                    new Separator(javafx.geometry.Orientation.HORIZONTAL),
-                    undoBtn, redoBtn, deleteShapeBtn);
-            if (newV.doubleValue() < 750) {
-                toolbar.getChildren().add(new Separator(javafx.geometry.Orientation.HORIZONTAL));
-                toolbar.getChildren().add(moreBtn);
-            } else {
-                toolbar.getChildren().addAll(clearBoard, clearAnnotations);
-            }
-        });
 
         // We use shapeToolbar as a dummy container to prevent null errors or hide/show logic issues
         this.shapeToolbar = new VBox();
@@ -694,96 +739,145 @@ public class TeacherUI {
         HBox.setHgrow(pptFileLabel, Priority.ALWAYS);
 
         prevSlideBtn = new Button("\u2190 Prev"); prevSlideBtn.setDisable(true);
-        slideCountLabel = new Label("\u2014 / \u2014");
-        slideCountLabel.getStyleClass().add("lbl-section");
-        slideCountLabel.setPadding(new Insets(0, 6, 0, 6));
+        jumpField = new TextField();
+        jumpField.setPrefWidth(45);
+        jumpField.setAlignment(Pos.CENTER);
+        jumpField.setDisable(true);
+        jumpField.setOnAction(e -> {
+            try {
+                int targetIdx = Integer.parseInt(jumpField.getText().trim()) - 1;
+                if (pptService != null && pptService.isLoaded() && targetIdx >= 0 && targetIdx < pptService.getTotalSlides()) {
+                    saveCurrentSlideMarkings();
+                    pptService.goTo(targetIdx);
+                    displayAndBroadcastSlide(pptService.getCurrentSlideData());
+                }
+            } catch (NumberFormatException ex) {}
+            if (pptService != null && pptService.isLoaded()) {
+                jumpField.setText(String.valueOf(pptService.getCurrentIndex() + 1));
+            }
+        });
+        jumpTotalLabel = new Label(" / \u2014");
+        jumpTotalLabel.getStyleClass().add("lbl-section");
+        HBox jumpBox = new HBox(5, jumpField, jumpTotalLabel);
+        jumpBox.setAlignment(Pos.CENTER);
         nextSlideBtn = new Button("Next \u2192"); nextSlideBtn.setDisable(true);
         Button exportPptBtn = new Button("Export PPT");
         exportPptBtn.setDisable(true); // enabled only when a PPT is loaded
 
         HBox pptControls = new HBox(10, loadPptBtn, pptFileLabel,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
-                prevSlideBtn, slideCountLabel, nextSlideBtn,
+                modeBox,
+                new Separator(javafx.geometry.Orientation.VERTICAL),
+                prevSlideBtn, jumpBox, nextSlideBtn,
                 new Separator(javafx.geometry.Orientation.VERTICAL),
                 exportPptBtn);
         pptControls.setAlignment(Pos.CENTER_LEFT);
         pptControls.getStyleClass().add("ppt-controls");
 
-        VBox pptPanel = new VBox(pptControls, pptWhiteboardPane);
-        VBox.setVgrow(pptWhiteboardPane, Priority.ALWAYS);
-        pptTab = new Tab("  PPT Sharing  ", pptPanel);
-        pptTab.setClosable(false);
-
-        // ── TAB 3: CODE SHARING ────────────────────────────────────────────
-        Label codeStatusLabel = new Label("Changes broadcast automatically");
-        codeStatusLabel.getStyleClass().add("lbl-subtitle");
-        HBox.setHgrow(codeStatusLabel, Priority.ALWAYS);
-
-        Button clearCodeBtn = new Button("Clear");
-        clearCodeBtn.getStyleClass().add("btn-danger");
-
-        HBox codeControls = new HBox(10, codeStatusLabel, clearCodeBtn);
-        codeControls.setAlignment(Pos.CENTER_LEFT);
-        codeControls.getStyleClass().add("code-toolbar");
-
-        codeEditor = new TextArea();
-        codeEditor.setPromptText("Type or paste code here \u2014 it broadcasts to students automatically...");
-        codeEditor.setFont(javafx.scene.text.Font.font("Monospaced", 14));
-        codeEditor.setWrapText(false);
-        codeEditor.setStyle(CODE_EDITOR_LIGHT);
-        HBox.setHgrow(codeEditor, Priority.ALWAYS);
-
-        lineNumbers = new TextArea("1");
-        lineNumbers.setEditable(false);
-        lineNumbers.setFocusTraversable(false);
-        lineNumbers.setPrefWidth(45);
-        lineNumbers.setMinWidth(45);
-        lineNumbers.setMaxWidth(45);
-        lineNumbers.setFont(javafx.scene.text.Font.font("Monospaced", 14));
-        lineNumbers.setWrapText(false);
-        lineNumbers.setStyle(CODE_NUMS_LIGHT);
-
-        codeEditor.textProperty().addListener((obs, old, text) -> {
-            String[] lines = text.split("\n", -1);
-            StringBuilder sb = new StringBuilder();
-            for (int i = 1; i <= lines.length; i++) { if (i > 1) sb.append("\n"); sb.append(i); }
-            lineNumbers.setText(sb.toString());
+        thumbnailList = new ListView<>();
+        thumbnailList.setPrefWidth(160);
+        thumbnailList.setMinWidth(160);
+        thumbnailList.setCellFactory(lv -> new ListCell<Image>() {
+            private final ImageView imageView = new ImageView();
+            { imageView.setPreserveRatio(true); imageView.setFitWidth(130); }
+            @Override
+            protected void updateItem(Image item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setGraphic(null);
+                    setText(null);
+                } else {
+                    imageView.setImage(item);
+                    setGraphic(imageView);
+                    setText(String.valueOf(getIndex() + 1));
+                    setAlignment(Pos.CENTER);
+                    setContentDisplay(ContentDisplay.TOP);
+                }
+            }
         });
-
-        codeArea = new HBox(lineNumbers, codeEditor);
-        codeArea.setStyle(CODE_AREA_LIGHT);
-        VBox.setVgrow(codeArea, Priority.ALWAYS);
-
-        codeEditor.setTextFormatter(new TextFormatter<>(change -> {
-            if (change.getText().contains("\t")) change.setText(change.getText().replace("\t", "    "));
-            return change;
-        }));
-        codeEditor.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
-            if (e.getCode() == javafx.scene.input.KeyCode.TAB) {
-                e.consume();
-                codeEditor.insertText(codeEditor.getCaretPosition(), "    ");
+        thumbnailList.getSelectionModel().selectedIndexProperty().addListener((obs, oldIdx, newIdx) -> {
+            if (newIdx != null && newIdx.intValue() >= 0 && pptService != null && pptService.isLoaded()) {
+                if (newIdx.intValue() != pptService.getCurrentIndex()) {
+                    saveCurrentSlideMarkings();
+                    pptService.goTo(newIdx.intValue());
+                    displayAndBroadcastSlide(pptService != null ? pptService.getCurrentSlideData() : null);
+                }
             }
         });
 
-        PauseTransition codeShareDebounce = new PauseTransition(Duration.millis(300));
-        codeShareDebounce.setOnFinished(evt -> {
-            if (server == null) return;
-            String code = codeEditor.getText();
-            if (code == null || code.isBlank()) return;
-            server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData(code, "Plain Text"), "Teacher"));
-            codeStatusLabel.setText("Last synced: " + java.time.LocalTime.now().withNano(0));
+        HBox pptWorkspace = new HBox(thumbnailList, pptWhiteboardPane);
+        HBox.setHgrow(pptWhiteboardPane, Priority.ALWAYS);
+        VBox pptPanel = new VBox(pptControls, pptWorkspace);
+        VBox.setVgrow(pptWorkspace, Priority.ALWAYS);
+        pptTab = new Tab("  PPT Sharing  ", pptPanel);
+        pptTab.setClosable(false);
+
+        // ── TAB 3: CODE SHARING ──────────────────────────────────────────
+        Button clearCodeBtn = new Button("Clear Code", Icons.of("fth-trash-2", 14));
+        clearCodeBtn.getStyleClass().addAll("btn-danger", "btn-small");
+        
+        Button fontMinus = new Button("A-"); fontMinus.getStyleClass().add("btn-small");
+        Button fontPlus = new Button("A+"); fontPlus.getStyleClass().add("btn-small");
+        
+        languageSelector = new ComboBox<>();
+        languageSelector.getItems().addAll("Plain Text", "Java", "Python", "C/C++", "JavaScript", "HTML", "CSS", "SQL", "Bash/AWK");
+        languageSelector.setValue("Plain Text");
+        languageSelector.getStyleClass().add("btn-small");
+        languageSelector.setOnAction(e -> {
+            currentLanguage = languageSelector.getValue();
+            if (codeEditor != null) {
+                highlightDebounce.playFromStart();
+                codeShareDebounce.playFromStart();
+            }
+        });
+
+        codeStatusLabel = new Label("Not synced");
+        codeStatusLabel.getStyleClass().add("lbl-subtitle");
+
+        javafx.scene.layout.Region codeSpacer = new javafx.scene.layout.Region();
+        HBox.setHgrow(codeSpacer, Priority.ALWAYS);
+        HBox codeControls = new HBox(10, clearCodeBtn, new Separator(javafx.geometry.Orientation.VERTICAL), languageSelector, fontMinus, fontPlus, codeSpacer, codeStatusLabel);
+        codeControls.setAlignment(Pos.CENTER_LEFT);
+        codeControls.setPadding(new Insets(10));
+        codeControls.getStyleClass().add("top-bar");
+
+        codeEditor = new org.fxmisc.richtext.CodeArea();
+        codeEditor.setParagraphGraphicFactory(org.fxmisc.richtext.LineNumberFactory.get(codeEditor));
+        codeEditor.setStyle("-fx-font-family: monospace; -fx-font-size: " + codeFontSize + "px;");
+        VBox.setVgrow(codeEditor, Priority.ALWAYS);
+        
+        highlightDebounce.setOnFinished(e -> {
+            codeEditor.setStyleSpans(0, SyntaxHighlighter.computeHighlighting(codeEditor.getText(), currentLanguage));
+        });
+
+        fontMinus.setOnAction(e -> {
+            if (codeFontSize > 10) { codeFontSize--; codeEditor.setStyle("-fx-font-family: monospace; -fx-font-size: " + codeFontSize + "px;"); }
+        });
+        fontPlus.setOnAction(e -> {
+            if (codeFontSize < 28) { codeFontSize++; codeEditor.setStyle("-fx-font-family: monospace; -fx-font-size: " + codeFontSize + "px;"); }
+        });
+
+        codeShareDebounce.setOnFinished(e -> {
+            if (server != null) {
+                server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData(codeEditor.getText(), currentLanguage), "Teacher"));
+            }
+            codeStatusLabel.setText("Last synced: " + java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")));
             codeStatusLabel.getStyleClass().setAll("text-success");
         });
-        codeEditor.textProperty().addListener((obs, oldVal, newVal) -> codeShareDebounce.playFromStart());
+        
+        codeEditor.textProperty().addListener((obs, oldVal, newVal) -> {
+            highlightDebounce.playFromStart();
+            codeShareDebounce.playFromStart();
+        });
 
         clearCodeBtn.setOnAction(e -> {
             codeEditor.clear();
-            if (server != null) server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData("", "Plain Text"), "Teacher"));
+            if (server != null) server.broadcast(new Message(MessageType.CODE_SHARE, new CodeData("", currentLanguage), "Teacher"));
             codeStatusLabel.setText("Code cleared");
             codeStatusLabel.getStyleClass().setAll("text-error");
         });
 
-        VBox codePanel = new VBox(codeControls, codeArea);
+        VBox codePanel = new VBox(codeControls, codeEditor);
         VBox.setVgrow(codePanel, Priority.ALWAYS);
         codeTab = new Tab("  Code Sharing  ", codePanel);
         codeTab.setClosable(false);
@@ -808,6 +902,10 @@ public class TeacherUI {
         tabPane.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
 
         tabPane.getSelectionModel().selectedItemProperty().addListener((obs, oldTab, newTab) -> {
+            if (newTab == whiteboardTab) {
+                whiteboardPane.setAnnotationMode(false);
+                whiteboardMode.setSelected(true);
+            }
             boolean drawVisible = (newTab != codeTab && newTab != fileTab);
             toolbar.setVisible(drawVisible);     toolbar.setManaged(drawVisible);
             shapeToolbar.setVisible(drawVisible); shapeToolbar.setManaged(drawVisible);
@@ -831,18 +929,40 @@ public class TeacherUI {
         rosterToggle.getStyleClass().add("btn-subtle");
 
         // Ensure buttons have enough width
+        String ipPortStr = (com.classroom.util.NetworkUtil.findBestLocalIp().isEmpty() ? "localhost" : com.classroom.util.NetworkUtil.findBestLocalIp().get(0)) + ":" + (server != null ? server.getPort() : "??");
+        Label ipValLabel = new Label(ipPortStr);
+        ipValLabel.setStyle("-fx-font-family: monospace; -fx-font-weight: bold;");
+        Button copyIpBtn = new Button("", Icons.of("fth-copy", 14));
+        copyIpBtn.getStyleClass().addAll("btn-icon", "btn-small");
+        copyIpBtn.setOnAction(e -> {
+            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+            content.putString(ipPortStr);
+            javafx.scene.input.Clipboard.getSystemClipboard().setContent(content);
+            showToast("Copied");
+        });
+        HBox ipChip = new HBox(4, ipValLabel, copyIpBtn);
+        ipChip.setAlignment(Pos.CENTER);
+        ipChip.setStyle("-fx-background-color: #E2E8F0; -fx-background-radius: 4; -fx-padding: 2 6 2 8;");
+
         rosterToggle.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         roleLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
-        ipLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        ipChip.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         dotLabel.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
-        overflowMenu.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        syncItem.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        themeBtn.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         stopButton.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
         
         // Dynamic student count update
         studentListView.getItems().addListener((javafx.collections.ListChangeListener.Change<? extends String> c) -> {
             int count = studentListView.getItems().size();
             rosterToggle.setText("Students (" + count + ")");
+            if (count == 0) {
+                rosterToggle.setTooltip(new Tooltip("Waiting for students — tell them to join " + ipPortStr));
+            } else {
+                rosterToggle.setTooltip(null);
+            }
         });
+        rosterToggle.setTooltip(new Tooltip("Waiting for students — tell them to join " + ipPortStr));
 
         // ── ROOT ───────────────────────────────────────────────────────────
         javafx.scene.layout.BorderPane mainLayout = new javafx.scene.layout.BorderPane();
@@ -851,7 +971,7 @@ public class TeacherUI {
         javafx.scene.layout.Region spacer = new javafx.scene.layout.Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        HBox topHeader = new HBox(8, titleLabel, spacer, rosterToggle, roleLabel, ipLabel, dotLabel, overflowMenu, stopButton);
+        HBox topHeader = new HBox(8, titleLabel, spacer, rosterToggle, roleLabel, ipChip, dotLabel, syncItem, themeBtn, stopButton);
         topHeader.setAlignment(Pos.CENTER);
         topHeader.setPadding(new Insets(10, 16, 10, 16));
         topHeader.setStyle("-fx-border-color: lightgray; -fx-border-width: 0 0 1 0;");
@@ -895,7 +1015,7 @@ public class TeacherUI {
                 if (codeEditor == null) return null;
                 String code = codeEditor.getText();
                 if (code == null || code.isBlank()) return null;
-                return new Message(MessageType.CODE_SHARE, new CodeData(code, "Plain Text"), "Teacher");
+                return new Message(MessageType.CODE_SHARE, new CodeData(code, currentLanguage), "Teacher");
             });
         }
 
@@ -990,15 +1110,12 @@ public class TeacherUI {
             mainScene.setRoot(toastPane);
             mainScene.getStylesheets().clear();
             mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
-            mainScene.getStylesheets().add(getClass().getResource("/style.css").toExternalForm());
         } else {
             javafx.geometry.Rectangle2D screenBounds = javafx.stage.Screen.getPrimary().getVisualBounds();
             mainScene = new Scene(toastPane, screenBounds.getWidth(), screenBounds.getHeight());
             mainScene.getStylesheets().add(getClass().getResource(THEME_LIGHT).toExternalForm());
-            mainScene.getStylesheets().add(getClass().getResource("/style.css").toExternalForm());
             stage.setScene(mainScene);
         }
-
         whiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
         pptWhiteboardPane.setCanvasBgColor(LIGHT_CANVAS, LIGHT_CONTAINER);
 
@@ -1010,21 +1127,26 @@ public class TeacherUI {
             pptWhiteboardPane.zoomToFit();
         });
 
+        
         stage.getScene().addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             javafx.scene.Node focusOwner = stage.getScene().getFocusOwner();
             boolean typing = focusOwner instanceof javafx.scene.control.TextInputControl || 
                              (focusOwner != null && focusOwner.getClass().getName().contains("WebView"));
             
-            if (tabPane.getSelectionModel().getSelectedItem() == pptTab) {
-                if (pptService != null && pptService.isLoaded() && !typing) {
-                    SlideData sd = null;
-                    if (e.getCode() == javafx.scene.input.KeyCode.RIGHT || e.getCode() == javafx.scene.input.KeyCode.DOWN) { saveCurrentSlideMarkings(); sd = pptService.nextSlide(); e.consume(); }
-                    else if (e.getCode() == javafx.scene.input.KeyCode.LEFT || e.getCode() == javafx.scene.input.KeyCode.UP) { saveCurrentSlideMarkings(); sd = pptService.prevSlide(); e.consume(); }
-                    if (sd != null) { displayAndBroadcastSlide(sd); restoreCurrentSlideMarkings(); updateNavButtons(); }
-                }
-            }
+            if (typing) return;
             
-            if (!typing) {
+            boolean ctrl = e.isShortcutDown();
+            boolean shift = e.isShiftDown();
+            
+            if (ctrl && !shift && e.getCode() == javafx.scene.input.KeyCode.Z) {
+                undoBtn.fire(); e.consume();
+            } else if (ctrl && (e.getCode() == javafx.scene.input.KeyCode.Y || (shift && e.getCode() == javafx.scene.input.KeyCode.Z))) {
+                redoBtn.fire(); e.consume();
+            } else if (ctrl && (e.getCode() == javafx.scene.input.KeyCode.EQUALS || e.getCode() == javafx.scene.input.KeyCode.ADD)) {
+                zoomInBtn.fire(); e.consume();
+            } else if (ctrl && (e.getCode() == javafx.scene.input.KeyCode.MINUS || e.getCode() == javafx.scene.input.KeyCode.SUBTRACT)) {
+                zoomOutBtn.fire(); e.consume();
+            } else if (!ctrl && !shift) {
                 switch (e.getCode()) {
                     case P: freehandTb.fire(); e.consume(); break;
                     case E: eraserTb.fire(); e.consume(); break;
@@ -1034,29 +1156,34 @@ public class TeacherUI {
                     case A: arrowTb.fire(); e.consume(); break;
                     case T: textTb.fire(); e.consume(); break;
                     case V: selectTb.fire(); e.consume(); break;
-                    case DELETE: deleteShapeBtn.fire(); e.consume(); break;
-                    case Z: 
-                        if (e.isControlDown() && !e.isShiftDown()) { undoBtn.fire(); e.consume(); }
-                        else if (e.isControlDown() && e.isShiftDown()) { redoBtn.fire(); e.consume(); }
-                        break;
-                    case Y: 
-                        if (e.isControlDown()) { redoBtn.fire(); e.consume(); }
-                        break;
-                    case EQUALS:
-                    case ADD:
-                        if (e.isControlDown()) { zoomInBtn.fire(); e.consume(); }
-                        break;
-                    case MINUS:
-                    case SUBTRACT:
-                        if (e.isControlDown()) { zoomOutBtn.fire(); e.consume(); }
-                        break;
-                    case DIGIT0:
-                    case NUMPAD0:
-                        if (e.isControlDown()) { zoomFitBtn.fire(); e.consume(); }
+                    case DELETE: 
+                        WhiteboardPane p = getActivePane();
+                        if (p != null) p.deleteSelectedShape();
+                        e.consume(); 
                         break;
                 }
             }
+            
+            // PPT Navigation (only on PPT tab)
+            if (tabPane.getSelectionModel().getSelectedItem() == pptTab && pptService != null && pptService.isLoaded()) {
+                if (e.getCode() == javafx.scene.input.KeyCode.RIGHT || e.getCode() == javafx.scene.input.KeyCode.PAGE_DOWN || e.getCode() == javafx.scene.input.KeyCode.SPACE) {
+                    nextSlideBtn.fire(); e.consume();
+                } else if (e.getCode() == javafx.scene.input.KeyCode.LEFT || e.getCode() == javafx.scene.input.KeyCode.PAGE_UP) {
+                    prevSlideBtn.fire(); e.consume();
+                } else if (e.getCode() == javafx.scene.input.KeyCode.HOME) {
+                    saveCurrentSlideMarkings();
+                    pptService.goTo(0);
+                    displayAndBroadcastSlide(pptService.getCurrentSlideData());
+                    e.consume();
+                } else if (e.getCode() == javafx.scene.input.KeyCode.END) {
+                    saveCurrentSlideMarkings();
+                    pptService.goTo(pptService.getTotalSlides() - 1);
+                    displayAndBroadcastSlide(pptService.getCurrentSlideData());
+                    e.consume();
+                }
+            }
         });
+
 
         refreshStudentList();
     }
@@ -1161,7 +1288,8 @@ public class TeacherUI {
             }
         });
 
-        Tab tab = new Tab("  \uD83D\uDCC1 Files  ", filePanel);
+        Tab tab = new Tab("  Files  ", filePanel);
+        tab.setGraphic(Icons.of("fth-folder", 16));
         tab.setClosable(false);
         return tab;
     }
@@ -1395,7 +1523,9 @@ public class TeacherUI {
         int idx = pptService.getCurrentIndex(), total = pptService.getTotalSlides();
         prevSlideBtn.setDisable(idx <= 0);
         nextSlideBtn.setDisable(idx >= total - 1);
-        slideCountLabel.setText((idx + 1) + " / " + total);
+        jumpField.setText(String.valueOf(idx + 1));
+        jumpTotalLabel.setText(" / " + total);
+        thumbnailList.getSelectionModel().select(idx);
     }
 
     /** Shows a themed alert dialog. Must be called on the FX thread. */
@@ -1431,7 +1561,6 @@ public class TeacherUI {
         
         javafx.scene.control.DialogPane dialogPane = alert.getDialogPane();
         dialogPane.getStylesheets().add(getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
-        dialogPane.getStylesheets().add(getClass().getResource("/style.css").toExternalForm());
         
         javafx.scene.control.ButtonType actionType = new javafx.scene.control.ButtonType(actionBtnText, javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
         javafx.scene.control.ButtonType cancelType = new javafx.scene.control.ButtonType("Cancel", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
@@ -1445,29 +1574,6 @@ public class TeacherUI {
     }
 
     private void showToast(String message) {
-        if (toastPane == null) return;
-        Label toastLabel = new Label(message);
-        toastLabel.getStyleClass().add("toast-label");
-        
-        javafx.scene.layout.StackPane.setAlignment(toastLabel, Pos.BOTTOM_CENTER);
-        javafx.scene.layout.StackPane.setMargin(toastLabel, new javafx.geometry.Insets(0, 0, 40, 0));
-        
-        toastPane.getChildren().add(toastLabel);
-        
-        javafx.animation.FadeTransition ft = new javafx.animation.FadeTransition(javafx.util.Duration.millis(300), toastLabel);
-        ft.setFromValue(0);
-        ft.setToValue(1);
-        ft.setDelay(javafx.util.Duration.millis(100));
-        ft.play();
-        
-        javafx.animation.PauseTransition pt = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(2.5));
-        pt.setOnFinished(e -> {
-            javafx.animation.FadeTransition fadeOut = new javafx.animation.FadeTransition(javafx.util.Duration.millis(300), toastLabel);
-            fadeOut.setFromValue(1);
-            fadeOut.setToValue(0);
-            fadeOut.setOnFinished(e2 -> toastPane.getChildren().remove(toastLabel));
-            fadeOut.play();
-        });
-        pt.play();
+        ToastHelper.showToast(toastPane, message);
     }
 }
