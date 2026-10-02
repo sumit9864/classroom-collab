@@ -374,17 +374,37 @@ public class StudentUI {
         stage.setMinHeight(540);
 
         if (client != null) {
-            client.setOnDisconnect(() -> {
-                if (stage.isShowing()) {
-                    Alert alert = new Alert(Alert.AlertType.WARNING);
-                    alert.setTitle("Connection Lost");
-                    alert.setHeaderText("Disconnected from teacher");
-                    alert.setContentText("The session has ended or the network connection was lost.");
-                    alert.getDialogPane().getStylesheets().add(
-                            getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
-                    alert.showAndWait();
-                    stage.close();
+            client.setOnStateChange(state -> {
+                if (state == StudentClient.State.OK) {
+                    statusLabel.setText("Connected");
+                    statusLabel.getStyleClass().setAll("label", "lbl-status-ok");
+                    dotLabel.getStyleClass().setAll("label", "text-success");
+                } else if (state == StudentClient.State.STALE) {
+                    statusLabel.setText("Connection unstable...");
+                    statusLabel.getStyleClass().setAll("label", "lbl-status-warn");
+                    dotLabel.getStyleClass().setAll("label", "text-warn");
+                } else if (state == StudentClient.State.LOST) {
+                    statusLabel.setText("Disconnected");
+                    statusLabel.getStyleClass().setAll("label", "lbl-status-bad");
+                    dotLabel.getStyleClass().setAll("label", "text-bad");
                 }
+            });
+            client.setOnDisconnect(() -> {
+                new Thread(() -> {
+                    try { Thread.sleep(3000); } catch (InterruptedException ie) {}
+                    Platform.runLater(() -> {
+                        if (stage.isShowing()) {
+                            Alert alert = new Alert(Alert.AlertType.WARNING);
+                            alert.setTitle("Connection Lost");
+                            alert.setHeaderText("Connection lost");
+                            alert.setContentText("The session has ended or the network connection was lost.");
+                            alert.getDialogPane().getStylesheets().add(
+                                    getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());
+                            alert.showAndWait();
+                            stage.close();
+                        }
+                    });
+                }).start();
             });
         }
 
@@ -729,7 +749,7 @@ public class StudentUI {
             case DISCONNECT:
                 Alert alert = new Alert(Alert.AlertType.INFORMATION);
                 alert.setTitle("Session Ended");
-                alert.setHeaderText(null);
+                alert.setHeaderText("Session ended");
                 alert.setContentText("Session ended by teacher.");
                 alert.getDialogPane().getStylesheets().add(
                         getClass().getResource(isDarkTheme ? THEME_DARK : THEME_LIGHT).toExternalForm());

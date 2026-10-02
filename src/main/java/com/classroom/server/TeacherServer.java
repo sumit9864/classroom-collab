@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -38,7 +39,7 @@ public class TeacherServer {
      * If the queue fills (e.g., extremely rapid code updates with 0 students reading),
      * broadcast() silently drops the message (offer() returns false) rather than OOM.
      */
-    public static final int MAX_DISPATCH_QUEUE = 300;
+    public static final int MAX_DISPATCH_QUEUE = 1000;
 
     /**
      * Capacity of the low-priority file chunk queue.
@@ -93,6 +94,8 @@ public class TeacherServer {
 
     private Thread dispatchThread;
     private Thread heartbeatThread;
+    
+    private volatile boolean needsResync = false;
 
     /**
      * Bounded thread pool for ClientHandler instances.
@@ -177,6 +180,19 @@ public class TeacherServer {
                     break;
                 }
 
+                if (needsResync) {
+                    needsResync = false;
+                    System.err.println("[TeacherServer] Recovering from missed messages (dispatch queue overflow).");
+                    if (stateSupplier != null) {
+                        Message stateMsg = onFx(stateSupplier, null);
+                        if (stateMsg != null) doSendAll(stateMsg);
+                    }
+                    if (pptWhiteboardStateSupplier != null) {
+                        Message pptStateMsg = onFx(pptWhiteboardStateSupplier, null);
+                        if (pptStateMsg != null) doSendAll(pptStateMsg);
+                    }
+                }
+
                 // Priority 1: drain all pending latest-value progress messages.
                 // These are always high-priority (stroke/shape drag previews).
                 Iterator<Map.Entry<String, AtomicReference<Message>>> it =
@@ -239,9 +255,12 @@ public class TeacherServer {
         // Shut down all per-client send threads BEFORE interrupting dispatch,
         // so the DISCONNECT message can still be distributed.
         doSendAll(new Message(MessageType.DISCONNECT, null, "Teacher"));
-        // Now shut down each client's send thread
+        // Now wait up to 500ms for each client's send thread to drain before shutting down
+        long end = System.currentTimeMillis() + 500;
         synchronized (clients) {
             for (ClientHandler c : clients) {
+                long remaining = end - System.currentTimeMillis();
+                if (remaining > 0) c.drain(remaining);
                 c.shutdown();
             }
         }
@@ -295,7 +314,10 @@ public class TeacherServer {
      * Releases the dispatch semaphore so the dispatch thread wakes immediately.
      */
     public void broadcast(Message msg) {
-        dispatchQueue.offer(msg);
+        if (!dispatchQueue.offer(msg)) {
+            System.err.println("[TeacherServer] dispatchQueue full, dropped msg: " + msg.getType());
+            needsResync = true;
+        }
         dispatchSignal.release();
     }
 
@@ -330,54 +352,37 @@ public class TeacherServer {
         dispatchSignal.release();
     }
 
+    private <T> T onFx(Supplier<T> s, T fallback) {
+        if (Platform.isFxApplicationThread()) return s.get();
+        FutureTask<T> f = new FutureTask<>(s::get);
+        Platform.runLater(f);
+        try { return f.get(2, TimeUnit.SECONDS); } catch (Exception e) { return fallback; }
+    }
+
     /**
      * Adds a new ClientHandler after successful authentication.
      * Sends a full-state snapshot ONLY to this new client, then broadcasts the updated student list.
      */
     public void addClient(ClientHandler handler) {
-        // 1. Send whiteboard full state to this student only (via per-client queue)
-        if (stateSupplier != null) {
-            try {
-                Message stateMsg = stateSupplier.get();
-                if (stateMsg != null) handler.enqueue(stateMsg);
-            } catch (Exception e) {
-                System.err.println("[TeacherServer] Failed to send whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
-            }
-        }
+        Message stateMsg = null;
+        if (stateSupplier != null) stateMsg = onFx(stateSupplier, null);
+        
+        Message pptMsg = null;
+        if (pptStateSupplier != null) pptMsg = onFx(pptStateSupplier, null);
+        
+        Message pptFullStateMsg = null;
+        if (pptWhiteboardStateSupplier != null) pptFullStateMsg = onFx(pptWhiteboardStateSupplier, null);
+        
+        Message codeMsg = null;
+        if (codeStateSupplier != null) codeMsg = onFx(codeStateSupplier, null);
 
-        // 2. Send current PPT slide to this student only
-        if (pptStateSupplier != null) {
-            try {
-                Message pptMsg = pptStateSupplier.get();
-                if (pptMsg != null) handler.enqueue(pptMsg);
-            } catch (Exception e) {
-                System.err.println("[TeacherServer] Failed to send PPT state to " + handler.getStudentName() + ": " + e.getMessage());
-            }
+        synchronized (clients) {
+            if (stateMsg != null) handler.enqueue(stateMsg);
+            if (pptMsg != null) handler.enqueue(pptMsg);
+            if (pptFullStateMsg != null) handler.enqueue(pptFullStateMsg);
+            if (codeMsg != null) handler.enqueue(codeMsg);
+            clients.add(handler);
         }
-
-        // 3. Send PPT whiteboard full state to this student only
-        if (pptWhiteboardStateSupplier != null) {
-            try {
-                Message pptFullStateMsg = pptWhiteboardStateSupplier.get();
-                if (pptFullStateMsg != null) handler.enqueue(pptFullStateMsg);
-            } catch (Exception e) {
-                System.err.println("[TeacherServer] Failed to send PPT whiteboard state to " + handler.getStudentName() + ": " + e.getMessage());
-            }
-        }
-
-        // 4. Send last shared code snippet to this student only
-        if (codeStateSupplier != null) {
-            try {
-                Message codeMsg = codeStateSupplier.get();
-                if (codeMsg != null) handler.enqueue(codeMsg);
-            } catch (Exception e) {
-                System.err.println("[TeacherServer] Failed to send code state to "
-                        + handler.getStudentName() + ": " + e.getMessage());
-            }
-        }
-
-        // 5. Add to broadcast list and notify UI (existing)
-        clients.add(handler);
         broadcastStudentList();
         Platform.runLater(onClientListChanged);
     }
@@ -415,4 +420,19 @@ public class TeacherServer {
 
     /** Returns the port this server is listening on. */
     public int getPort() { return port; }
+
+    /**
+     * Checks if a given student name is already in use by a connected client.
+     * Case-insensitive comparison.
+     */
+    public boolean isNameTaken(String name) {
+        synchronized (clients) {
+            for (ClientHandler c : clients) {
+                if (name.equalsIgnoreCase(c.getStudentName())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 }

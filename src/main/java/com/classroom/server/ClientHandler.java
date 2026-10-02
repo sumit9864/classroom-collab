@@ -8,6 +8,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.Socket;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ClientHandler implements Runnable {
 
@@ -27,6 +28,7 @@ public class ClientHandler implements Runnable {
     private ObjectInputStream in;
     private String studentName;
     private volatile boolean active = true;
+    private final AtomicBoolean removed = new AtomicBoolean(false);
 
     /**
      * Per-client outbound message queue. The dispatch thread (and addClient state sync)
@@ -47,18 +49,15 @@ public class ClientHandler implements Runnable {
     public ClientHandler(Socket socket, TeacherServer server) {
         this.socket = socket;
         this.server = server;
-        try {
-            // Create OOS first, then OIS — critical ordering to avoid deadlock
-            this.out = NetworkUtil.createOutputStream(socket);
-            this.in  = NetworkUtil.createInputStream(socket);
-        } catch (IOException e) {
-            System.err.println("[ClientHandler] Stream init error: " + e.getMessage());
-        }
     }
 
     @Override
     public void run() {
         try {
+            socket.setSoTimeout(10_000);
+            out = NetworkUtil.createOutputStream(socket);
+            in  = NetworkUtil.createInputStream(socket);
+
             // First message must be AUTH_REQUEST
             Message authMsg = NetworkUtil.readMessage(in);
             if (authMsg == null || authMsg.getType() != MessageType.AUTH_REQUEST) {
@@ -69,6 +68,24 @@ public class ClientHandler implements Runnable {
             }
 
             studentName = authMsg.getSenderName();
+            if (studentName == null || studentName.trim().isEmpty()) {
+                rejectJoin("Name cannot be empty.");
+                return;
+            }
+            if (studentName.length() > 30) {
+                rejectJoin("Name too long (max 30 chars).");
+                return;
+            }
+            if (studentName.equalsIgnoreCase("Teacher") || studentName.equalsIgnoreCase("Teacher_PPT")) {
+                rejectJoin("\"Teacher\" and \"Teacher_PPT\" are reserved names.");
+                return;
+            }
+            if (server.isNameTaken(studentName)) {
+                rejectJoin("That name is already in use. Please choose another.");
+                return;
+            }
+
+            socket.setSoTimeout(0); // Reset for normal operation
             System.out.println("[ClientHandler] AUTH_REQUEST from: " + studentName);
 
             // Start the per-client send thread BEFORE sending AUTH_SUCCESS so that
@@ -87,12 +104,23 @@ public class ClientHandler implements Runnable {
                 }
                 handle(msg);
             }
+        } catch (Exception e) {
+            System.err.println("[ClientHandler] Init/read error: " + e.getMessage());
         } finally {
             shutdown();
-            server.removeClient(this);
+            if (removed.compareAndSet(false, true)) {
+                server.removeClient(this);
+            }
             closeStreams();
-            System.out.println("[ClientHandler] " + studentName + " disconnected.");
+            System.out.println("[ClientHandler] " + (studentName != null ? studentName : "unknown") + " disconnected.");
         }
+    }
+
+    private void rejectJoin(String reason) {
+        try {
+            NetworkUtil.sendMessage(out, new Message(MessageType.AUTH_FAILURE, reason, "Teacher"));
+        } catch (IOException ignored) {}
+        closeStreams();
     }
 
     /**
@@ -158,6 +186,13 @@ public class ClientHandler implements Runnable {
         }, "send-" + (studentName != null ? studentName : "pending"));
         sendThread.setDaemon(true);
         sendThread.start();
+    }
+
+    public void drain(long timeoutMs) {
+        long end = System.currentTimeMillis() + timeoutMs;
+        while (!sendQueue.isEmpty() && System.currentTimeMillis() < end) {
+            try { Thread.sleep(10); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
     }
 
     /**

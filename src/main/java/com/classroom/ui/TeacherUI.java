@@ -74,6 +74,7 @@ public class TeacherUI {
     private javafx.scene.layout.StackPane toastPane;
     private Tooltip statusDotTooltip;
     private Label ipLabel;
+    private String tooltipIps = "Unknown";
 
     // ── Dynamic refs updated on theme switch ───────────────────────────────
     private TextArea codeEditor;
@@ -176,17 +177,20 @@ public class TeacherUI {
         Label roleLabel = new Label("Teacher");
         roleLabel.getStyleClass().add("role-teacher");
 
-        String localIp;
-        try { localIp = InetAddress.getLocalHost().getHostAddress(); }
-        catch (Exception ex) { localIp = "Unknown"; }
+        List<String> candidates = com.classroom.util.NetworkUtil.findBestLocalIp();
+        String primaryIp = candidates.isEmpty() ? "Unknown" : candidates.get(0);
+        tooltipIps = candidates.isEmpty() ? "Unknown" : String.join("\n", candidates);
 
-        ipLabel = new Label("  " + localIp + "  :  " +
+        ipLabel = new Label("  " + primaryIp + "  :  " +
                 (server != null ? server.getPort() : "\u2014"));
         ipLabel.getStyleClass().add("lbl-ip");
+        if (candidates.size() > 1) {
+            ipLabel.setTooltip(new Tooltip(tooltipIps));
+        }
 
         Label dotLabel = new Label("●");
         dotLabel.getStyleClass().add("text-success");
-        statusDotTooltip = new Tooltip(localIp + "\n0 connected");
+        statusDotTooltip = new Tooltip(tooltipIps + "\n0 connected");
         statusDotTooltip.setShowDelay(javafx.util.Duration.millis(400));
         dotLabel.setTooltip(statusDotTooltip);
 
@@ -1413,7 +1417,7 @@ public class TeacherUI {
                 int count = names.size();
                 studentCountLabel.setText(count + (count == 1 ? " student" : " students"));
                 if (statusDotTooltip != null) {
-                    statusDotTooltip.setText(ipLabel.getText().trim() + "\n" + count + " connected");
+                    statusDotTooltip.setText(tooltipIps + "\n" + count + " connected");
                 }
             }
         });

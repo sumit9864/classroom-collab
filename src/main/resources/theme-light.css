@@ -19,6 +19,8 @@
 .lbl-panel-header     { -fx-text-fill: #111827; -fx-font-size: 13px; -fx-font-weight: bold; }
 .lbl-muted            { -fx-text-fill: #9ca3af; -fx-font-style: italic; -fx-font-size: 14px; }
 .lbl-status-ok        { -fx-text-fill: #059669; -fx-font-size: 13px; -fx-font-weight: bold; }
+.lbl-status-warn      { -fx-text-fill: #d97706; -fx-font-size: 13px; -fx-font-weight: bold; }
+.lbl-status-bad       { -fx-text-fill: #dc2626; -fx-font-size: 13px; -fx-font-weight: bold; }
 .login-app-name       { -fx-text-fill: #111827; -fx-font-size: 20px; -fx-font-weight: bold; }
 .login-app-desc       { -fx-text-fill: #4b5563; -fx-font-size: 12px; }
 .login-field-label    { -fx-text-fill: #4b5563; -fx-font-size: 12px; -fx-font-weight: bold; }
@@ -270,6 +272,8 @@
 .text-success { -fx-text-fill: #059669; }
 .text-success-bold { -fx-text-fill: #059669; -fx-font-weight: bold; }
 .text-error { -fx-text-fill: #dc2626; }
+.text-warn { -fx-text-fill: #d97706; }
+.text-bad { -fx-text-fill: #dc2626; }
 .text-muted { -fx-text-fill: #6b7280; }
 .row-error { -fx-background-color: #fff5f5; -fx-border-radius: 6; -fx-background-radius: 6; }
 .role-teacher { -fx-text-fill: #2563eb; -fx-font-size: 11px; -fx-font-weight: bold; }

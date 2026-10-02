@@ -21,7 +21,11 @@ public class StudentClient {
     private ObjectInputStream in;
     private volatile boolean running;
     private Runnable onDisconnectCallback; // called on FX thread when server drops unexpectedly
+    private Consumer<State> onStateChange;
     private final Consumer<Message> onMessageReceived; // UI callback
+    
+    public enum State { OK, STALE, LOST }
+    private volatile long lastMessageAt;
 
     public StudentClient(String host, int port, String studentName,
                          Consumer<Message> onMessageReceived) {
@@ -38,7 +42,20 @@ public class StudentClient {
      */
     public void connect() throws Exception {
         socket = new Socket();
-        socket.connect(new InetSocketAddress(host, port), 5000); // 5-second timeout
+        
+        try {
+            socket.connect(new InetSocketAddress(host, port), 5000); // 5-second timeout
+        } catch (java.net.ConnectException e) {
+            throw new Exception("No classroom found at " + host + ":" + port + ". Check the IP and that the teacher has started a session.");
+        } catch (java.net.SocketTimeoutException e) {
+            throw new Exception("The teacher did not respond. Check Wi-Fi and the firewall (port " + port + ").");
+        } catch (Exception e) {
+            throw new Exception("Connection failed: " + e.getMessage());
+        }
+
+        socket.setSoTimeout(5000);
+        socket.setKeepAlive(true);
+        socket.setTcpNoDelay(true);
 
         // Create OOS first, then OIS — critical ordering
         out = NetworkUtil.createOutputStream(socket);
@@ -49,11 +66,26 @@ public class StudentClient {
                 new Message(MessageType.AUTH_REQUEST, null, studentName));
 
         // Expect AUTH_SUCCESS
-        Message response = NetworkUtil.readMessage(in);
-        if (response == null || response.getType() != MessageType.AUTH_SUCCESS) {
+        Message response;
+        try {
+            response = NetworkUtil.readMessage(in);
+        } catch (Exception e) {
             closeStreams();
-            throw new Exception("Authentication failed: server rejected the join request.");
+            throw new Exception("The teacher did not respond. Check Wi-Fi and the firewall (port " + port + ").");
         }
+        
+        if (response == null || (response.getType() != MessageType.AUTH_SUCCESS && response.getType() != MessageType.AUTH_FAILURE)) {
+            closeStreams();
+            String reason = response != null && response.getPayload() instanceof String ? (String) response.getPayload() : "server rejected the join request";
+            throw new Exception("Authentication failed: " + reason);
+        }
+        
+        if (response.getType() == MessageType.AUTH_FAILURE) {
+            closeStreams();
+            throw new Exception((String) response.getPayload());
+        }
+        
+        socket.setSoTimeout(0); // Reset timeout for normal operation
 
         running = true;
         startListenerThread();
@@ -66,18 +98,41 @@ public class StudentClient {
      * to the UI callback via Platform.runLater.
      */
     private void startListenerThread() {
+        Thread watchdog = new Thread(() -> {
+            boolean wasStale = false;
+            while (running) {
+                try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                if (running) {
+                    if (System.currentTimeMillis() - lastMessageAt > 75_000) {
+                        if (!wasStale) {
+                            wasStale = true;
+                            if (onStateChange != null) Platform.runLater(() -> onStateChange.accept(State.STALE));
+                        }
+                    } else if (wasStale) {
+                        wasStale = false;
+                        if (onStateChange != null) Platform.runLater(() -> onStateChange.accept(State.OK));
+                    }
+                }
+            }
+        });
+        watchdog.setDaemon(true);
+        watchdog.start();
+
         Thread listener = new Thread(() -> {
+            lastMessageAt = System.currentTimeMillis();
             while (running) {
                 Message msg = NetworkUtil.readMessage(in);
                 if (msg == null) {
                     // Server closed or error — capture running state BEFORE disconnect()
                     boolean wasRunning = running;
                     disconnect();
-                    if (wasRunning && onDisconnectCallback != null) {
-                        Platform.runLater(onDisconnectCallback);
+                    if (wasRunning) {
+                        if (onStateChange != null) Platform.runLater(() -> onStateChange.accept(State.LOST));
+                        if (onDisconnectCallback != null) Platform.runLater(onDisconnectCallback);
                     }
                     break;
                 }
+                lastMessageAt = System.currentTimeMillis();
                 if (msg.getType() == MessageType.DISCONNECT) {
                     running = false; // Expected disconnect: prevent onDisconnectCallback from firing
                 }
@@ -95,8 +150,10 @@ public class StudentClient {
         if (!running) return;
         running = false;
         if (isConnected()) {
-            NetworkUtil.sendMessage(out,
-                    new Message(MessageType.DISCONNECT, null, studentName));
+            try {
+                NetworkUtil.sendMessage(out,
+                        new Message(MessageType.DISCONNECT, null, studentName));
+            } catch (IOException ignored) {}
         }
         closeStreams();
         System.out.println("[StudentClient] Disconnected.");
@@ -116,6 +173,10 @@ public class StudentClient {
         this.onDisconnectCallback = callback;
     }
 
+    public void setOnStateChange(Consumer<State> callback) {
+        this.onStateChange = callback;
+    }
+
     private void closeStreams() {
         try {
             if (in     != null) in.close();
@@ -123,6 +184,16 @@ public class StudentClient {
             if (socket != null && !socket.isClosed()) socket.close();
         } catch (IOException e) {
             System.err.println("[StudentClient] Close error: " + e.getMessage());
+        }
+    }
+
+    public void sendMessage(Message msg) {
+        if (running && out != null) {
+            try {
+                NetworkUtil.sendMessage(out, msg);
+            } catch (IOException e) {
+                System.err.println("[StudentClient] sendMessage error: " + e.getMessage());
+            }
         }
     }
 }
