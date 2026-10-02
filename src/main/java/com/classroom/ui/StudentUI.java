@@ -49,7 +49,7 @@ public class StudentUI {
     private static final Color  DARK_CANVAS    = Color.web("#1a2035");
     private static final String DARK_CONTAINER = "#0d1117";
     private static final Color  LIGHT_CANVAS    = Color.WHITE;
-    private static final String LIGHT_CONTAINER = "#e0e0e0";
+    private static final String LIGHT_CONTAINER = "#F8F9FA";
     private static final String CODE_VIEWER_DARK  =
             "-fx-control-inner-background: #1e1e1e; -fx-text-fill: #d4d4d4; " +
             "-fx-background-color: #1e1e1e; -fx-background-insets: 0; -fx-padding: 0; " +
@@ -85,7 +85,6 @@ public class StudentUI {
     private WhiteboardPane whiteboardPane;
 
     // Phase 3
-    private ImageView  pptImageView;
     private Tab        pptTab;
     private TabPane    tabPane;
     private StackPane  pptSlidePanel;
@@ -94,7 +93,7 @@ public class StudentUI {
     // Phase 4
     private Tab        codeTab;
     private Tab        whiteboardTab;
-    private ScrollPane wbScroller; // kept as field for zoom-to-centre
+    // wbScroller removed
 
     // Phase 5 — File receiving
     private Tab    fileTab;
@@ -163,37 +162,6 @@ public class StudentUI {
         if (codeArea    != null) codeArea   .setStyle(dark ? CODE_AREA_DARK   : CODE_AREA_LIGHT);
     }
 
-    // ── Zoom preserving viewport centre ──────────────────────────────────────
-    private void zoomPane(WhiteboardPane p, double delta) {
-        if (p == null || wbScroller == null) return;
-        double oldZoom = p.getZoom();
-        javafx.geometry.Bounds vp = wbScroller.getViewportBounds();
-        double vpW = vp.getWidth(),  vpH = vp.getHeight();
-        double cw  = p.getPrefWidth(), ch = p.getPrefHeight();
-        double holderW = Math.max(vpW, cw * oldZoom);
-        double holderH = Math.max(vpH, ch * oldZoom);
-        double scrollX = wbScroller.getHvalue() * Math.max(0, holderW - vpW);
-        double scrollY = wbScroller.getVvalue() * Math.max(0, holderH - vpH);
-        double vcX = scrollX + vpW / 2;
-        double vcY = scrollY + vpH / 2;
-        double canvasLeft = Math.max(0, (holderW - cw * oldZoom) / 2);
-        double canvasTop  = Math.max(0, (holderH - ch * oldZoom) / 2);
-        double focusX = (vcX - canvasLeft) / oldZoom;
-        double focusY = (vcY - canvasTop)  / oldZoom;
-        p.setZoom(p.getZoom() + delta);
-        final double nz = p.getZoom();
-        javafx.application.Platform.runLater(() -> {
-            double newHolderW = Math.max(vpW, cw * nz);
-            double newHolderH = Math.max(vpH, ch * nz);
-            double newCanvasLeft = Math.max(0, (newHolderW - cw * nz) / 2);
-            double newCanvasTop  = Math.max(0, (newHolderH - ch * nz) / 2);
-            double newScrollX = focusX * nz + newCanvasLeft - vpW / 2;
-            double newScrollY = focusY * nz + newCanvasTop  - vpH / 2;
-            wbScroller.setHvalue(Math.max(0, Math.min(1, newScrollX / Math.max(1, newHolderW - vpW))));
-            wbScroller.setVvalue(Math.max(0, Math.min(1, newScrollY / Math.max(1, newHolderH - vpH))));
-        });
-    }
-
     // ── show() ─────────────────────────────────────────────────────────────
     public void show() {
 
@@ -234,37 +202,17 @@ public class StudentUI {
         pptWhiteboardPane.setTransparentBackground(true);
 
         // ── TAB 1: WHITEBOARD ──────────────────────────────────────────────
-        javafx.scene.Group canvasGroup = new javafx.scene.Group(whiteboardPane);
-        // Centering holder: always at least as large as the viewport so the
-        // canvas stays centred; grows beyond viewport when zoomed in (scrollbars appear).
-        javafx.scene.layout.StackPane centeredHolder = new javafx.scene.layout.StackPane(canvasGroup);
-        centeredHolder.setAlignment(Pos.CENTER);
-        centeredHolder.getStyleClass().add("canvas-holder");
-        wbScroller = new ScrollPane(centeredHolder);
-        wbScroller.setPannable(false); // prevent drag-to-scroll during freehand drawing
-        wbScroller.setStyle("-fx-focus-color: transparent; -fx-faint-focus-color: transparent; -fx-background-color: transparent;");
-        // Keep canvas centred whenever the viewport is resized
-        wbScroller.viewportBoundsProperty().addListener((obs, old, b) -> {
-            centeredHolder.setMinWidth(b.getWidth());
-            centeredHolder.setMinHeight(b.getHeight());
-        });
-        whiteboardTab = new Tab("  Whiteboard  ", wbScroller);
+        whiteboardTab = new Tab("  Whiteboard  ", whiteboardPane);
         whiteboardTab.setClosable(false);
 
         // ── TAB 2: PPT SLIDE ───────────────────────────────────────────────
-        pptImageView = new ImageView();
-        pptImageView.setPreserveRatio(true);
-        pptImageView.setSmooth(true);
-
         Label waitingLabel = new Label("Waiting for teacher to share a slide...");
         waitingLabel.getStyleClass().add("lbl-muted");
 
-        pptSlidePanel = new StackPane();
+        pptSlidePanel = new StackPane(waitingLabel, pptWhiteboardPane);
         pptSlidePanel.getStyleClass().add("ppt-center");
         pptSlidePanel.setAlignment(Pos.CENTER);
-        pptSlidePanel.getChildren().add(waitingLabel);
-        pptImageView.fitWidthProperty().bind(pptSlidePanel.widthProperty());
-        pptImageView.fitHeightProperty().bind(pptSlidePanel.heightProperty());
+        pptSlidePanel.setStyle("-fx-background-color: #F8F9FA;"); // Fill PPT background
 
         pptTab = new Tab("  PPT Slide  ", pptSlidePanel);
         pptTab.setClosable(false);
@@ -336,6 +284,11 @@ public class StudentUI {
             if (forcedTabIndex != -1 && tabPane.getSelectionModel().getSelectedIndex() != forcedTabIndex) {
                 javafx.application.Platform.runLater(() -> tabPane.getSelectionModel().select(forcedTabIndex));
             }
+            if (newTab == codeTab || newTab == fileTab) {
+                tabPane.setPadding(new Insets(70, 0, 0, 0));
+            } else {
+                tabPane.setPadding(new Insets(0));
+            }
         });
 
         // ── BOTTOM STATUS BAR ──────────────────────────────────────────────
@@ -348,21 +301,13 @@ public class StudentUI {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
             if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
-            if (sel == whiteboardTab) {
-                zoomPane(active, 0.1);
-            } else {
-                active.setZoom(active.getZoom() + 0.1);
-            }
+            active.setZoom(active.getZoom() * 1.1);
         });
         zoomOutBtn.setOnAction(e -> {
             Tab sel = tabPane.getSelectionModel().getSelectedItem();
             if (sel == codeTab || sel == fileTab) return;
             WhiteboardPane active = (sel == pptTab) ? pptWhiteboardPane : whiteboardPane;
-            if (sel == whiteboardTab) {
-                zoomPane(active, -0.1);
-            } else {
-                active.setZoom(active.getZoom() - 0.1);
-            }
+            active.setZoom(active.getZoom() / 1.1);
         });
 
         Label dotLabel = new Label("●");
@@ -409,21 +354,20 @@ public class StudentUI {
         actionsBadge.getChildren().addAll(zoomInBtn, zoomOutBtn);
 
         // ── ROOT ───────────────────────────────────────────────────────────
+        metadataBadge.setMinWidth(Region.USE_PREF_SIZE);
+        actionsBadge.setMinWidth(Region.USE_PREF_SIZE);
+        topNavPill.setMinWidth(Region.USE_PREF_SIZE);
+
+        Region g1 = new Region(), g2 = new Region();
+        HBox.setHgrow(g1, Priority.ALWAYS); HBox.setHgrow(g2, Priority.ALWAYS);
+        HBox topBarLayer = new HBox(12, metadataBadge, g1, topNavPill, g2, actionsBadge);
+        topBarLayer.setPadding(new Insets(15));
+        topBarLayer.setPickOnBounds(false);          // empty areas must pass clicks to the canvas
+        topBarLayer.setMaxHeight(Region.USE_PREF_SIZE);
+        StackPane.setAlignment(topBarLayer, Pos.TOP_CENTER);
+        
         javafx.scene.layout.StackPane root = new javafx.scene.layout.StackPane();
-        javafx.scene.layout.Pane uiOverlay = new javafx.scene.layout.Pane();
-        uiOverlay.setPickOnBounds(false); // Let clicks pass through to canvas
-        
-        // Positioning
-        topNavPill.layoutXProperty().bind(root.widthProperty().subtract(topNavPill.widthProperty()).divide(2));
-        topNavPill.setLayoutY(15);
-        metadataBadge.setLayoutX(15);
-        metadataBadge.setLayoutY(15);
-        
-        actionsBadge.layoutXProperty().bind(root.widthProperty().subtract(actionsBadge.widthProperty()).subtract(15));
-        actionsBadge.setLayoutY(15);
-        
-        uiOverlay.getChildren().addAll(metadataBadge, topNavPill, actionsBadge);
-        root.getChildren().addAll(tabPane, uiOverlay);
+        root.getChildren().addAll(tabPane, topBarLayer);
 
         stage.setOnCloseRequest(e -> { if (client != null) client.disconnect(); });
         stage.setMinWidth(800);
@@ -831,11 +775,10 @@ public class StudentUI {
             case PPT_SLIDE:
                 SlideData sd = (SlideData) msg.getPayload();
                 Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
-                pptImageView.setImage(fxImg);
-                if (!pptSlidePanel.getChildren().contains(pptImageView)) {
-                    pptSlidePanel.getChildren().clear();
-                    javafx.scene.Group overlayGroup = new javafx.scene.Group(pptWhiteboardPane);
-                    pptSlidePanel.getChildren().addAll(pptImageView, overlayGroup);
+                pptWhiteboardPane.setBackgroundImage(fxImg);
+                pptWhiteboardPane.zoomToFit();
+                if (pptSlidePanel.getChildren().size() > 1 && pptSlidePanel.getChildren().get(0) instanceof Label) {
+                    pptSlidePanel.getChildren().get(0).setVisible(false);
                 }
 
                 break;

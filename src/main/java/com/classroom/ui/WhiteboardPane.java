@@ -214,6 +214,9 @@ public class WhiteboardPane extends StackPane {
     private long lastShapeDragNs = 0L;
     private static final long SHAPE_DRAG_INTERVAL_NS = 16_000_000L;
 
+    private javafx.scene.image.ImageView backgroundImageView;
+    private boolean userZoomed = false;
+
     public WhiteboardPane(boolean teacherMode, Consumer<StrokeData> onStrokeDrawn) {
         this.teacherMode   = teacherMode;
         this.onStrokeDrawn = onStrokeDrawn;
@@ -233,7 +236,11 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setMaxSize(800, 500);
         shapeOverlayPane.setMouseTransparent(true);
 
-        StackPane pageWrapper = new StackPane(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
+        backgroundImageView = new javafx.scene.image.ImageView();
+        backgroundImageView.setPreserveRatio(true);
+        backgroundImageView.setMouseTransparent(true);
+        
+        StackPane pageWrapper = new StackPane(backgroundImageView, whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
         pageWrapper.setMinSize(800, 500);
         pageWrapper.setPrefSize(800, 500);
         pageWrapper.setMaxSize(800, 500);
@@ -245,10 +252,16 @@ public class WhiteboardPane extends StackPane {
         gridCanvas = new Canvas();
         gridCanvas.widthProperty().bind(widthProperty());
         gridCanvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener(e -> drawWorkspaceBackground());
-        heightProperty().addListener(e -> drawWorkspaceBackground());
+        widthProperty().addListener(e -> {
+            if (!userZoomed) zoomToFit();
+            drawWorkspaceBackground();
+        });
+        heightProperty().addListener(e -> {
+            if (!userZoomed) zoomToFit();
+            drawWorkspaceBackground();
+        });
         
-        emptyStateHint = new javafx.scene.control.Label("Pick a tool to start drawing");
+        emptyStateHint = new javafx.scene.control.Label(teacherMode ? "Pick a tool to start drawing" : "Waiting for the teacher…");
         emptyStateHint.setStyle("-fx-text-fill: #9ca3af; -fx-font-size: 16px;");
         emptyStateHint.setMouseTransparent(true);
 
@@ -295,6 +308,7 @@ public class WhiteboardPane extends StackPane {
                 newZoom = Math.max(0.25, Math.min(4.0, newZoom));
                 
                 if (newZoom != zoomLevel) {
+                    userZoomed = true;
                     double f = (newZoom / zoomLevel) - 1;
                     panX -= (e.getX() - panX) * f;
                     panY -= (e.getY() - panY) * f;
@@ -320,6 +334,7 @@ public class WhiteboardPane extends StackPane {
         });
         workspace.setOnMouseDragged(e -> {
             if (ps.panning) {
+                userZoomed = true;
                 panX = ps.startPanX + (e.getX() - ps.anchorX);
                 panY = ps.startPanY + (e.getY() - ps.anchorY);
                 updateZoomAndPan();
@@ -347,7 +362,7 @@ public class WhiteboardPane extends StackPane {
         double wh = getHeight();
         if (cw == 0 || ch == 0 || ww == 0 || wh == 0) return;
         
-        double padding = 40;
+        double padding = 0; // Removing padding helps fit perfectly, or adjust if needed.
         double scaleX = (ww - padding * 2) / cw;
         double scaleY = (wh - padding * 2) / ch;
         double newZoom = Math.min(scaleX, scaleY);
@@ -1636,7 +1651,20 @@ public class WhiteboardPane extends StackPane {
         
         boolean hasContent = !shapeDataMap.isEmpty() || !history.isEmpty();
         if (emptyStateHint != null) {
-            emptyStateHint.setVisible(!hasContent && !toolPicked);
+            if (teacherMode) {
+                emptyStateHint.setVisible(!hasContent && !toolPicked);
+            } else {
+                emptyStateHint.setVisible(!hasContent);
+            }
+        }
+    }
+
+    public void setBackgroundImage(javafx.scene.image.Image img) {
+        userZoomed = false;
+        if (backgroundImageView != null) {
+            backgroundImageView.setImage(img);
+            backgroundImageView.setFitWidth(getCanvasW());
+            backgroundImageView.setFitHeight(getCanvasH());
         }
     }
 
@@ -1649,6 +1677,10 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setPrefSize(w, h);
         shapeOverlayPane.setMaxSize(w, h);
         
+        if (backgroundImageView != null) {
+            backgroundImageView.setFitWidth(w);
+            backgroundImageView.setFitHeight(h);
+        }
         if (workspace != null) {
             for (javafx.scene.Node n : workspace.getChildren()) {
                 if (n instanceof Group) {
@@ -1690,6 +1722,7 @@ public class WhiteboardPane extends StackPane {
 
     public double getZoom() { return zoomLevel; }
     public void setZoom(double level) {
+        userZoomed = true;
         level = Math.max(0.25, Math.min(4.0, level));
         if (level == zoomLevel) return;
         

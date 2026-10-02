@@ -89,7 +89,7 @@ public class TeacherUI {
 
     // Phase 3 — PPT
     private PptService pptService;
-    private ImageView  pptImageView;
+
     private Label      slideCountLabel;
     private Button     prevSlideBtn;
     private Button     nextSlideBtn;
@@ -311,6 +311,8 @@ public class TeacherUI {
             else if (val.contains("1920x1080")) { w = 1920; h = 1080; }
             whiteboardPane.setCanvasSize(w, h);
             pptWhiteboardPane.setCanvasSize(w, h);
+            whiteboardPane.zoomToFit();
+            pptWhiteboardPane.zoomToFit();
             if (server != null) {
                 server.broadcast(new Message(MessageType.CANVAS_RESIZE, new double[]{w, h}, "Teacher"));
                 server.broadcast(new Message(MessageType.CANVAS_RESIZE, new double[]{w, h}, "Teacher_PPT"));
@@ -340,15 +342,15 @@ public class TeacherUI {
 
         zoomInBtn.setOnAction(e -> {
             WhiteboardPane p = getActivePane();
-            if (p != null) p.setZoom(p.getZoom() + 0.1);
+            if (p != null) p.setZoom(p.getZoom() * 1.1);
         });
         zoomOutBtn.setOnAction(e -> {
             WhiteboardPane p = getActivePane();
-            if (p != null) p.setZoom(p.getZoom() - 0.1);
+            if (p != null) p.setZoom(p.getZoom() / 1.1);
         });
         zoomFitBtn.setOnAction(e -> {
             WhiteboardPane p = getActivePane();
-            if (p != null) p.setZoom(1.0);
+            if (p != null) p.zoomToFit();
         });
 
         whiteboardPane.zoomProperty().addListener((obs, oldV, newV) -> {
@@ -429,7 +431,7 @@ public class TeacherUI {
         ToggleButton eraserTb   = shapeTool("Eraser", "M15.14 3c-.51 0-1.02.2-1.41.59L2.59 14.73c-.78.77-.78 2.04 0 2.83L5.43 20.4c.39.39.9.59 1.41.59h14.16v-2H12.6l7.85-7.85c.78-.77.78-2.04 0-2.83l-3.9-3.9A1.97 1.97 0 0 0 15.14 3z", shapeGroup);
         ToggleButton rectTb     = shapeTool("Rectangle", "fth-square", shapeGroup);
         ToggleButton ellipseTb  = shapeTool("Ellipse", "fth-circle", shapeGroup);
-        ToggleButton lineTb     = shapeTool("Line", "M2 20L20 2", shapeGroup);
+        ToggleButton lineTb     = shapeTool("Line", "M3 19L19 3L21 5L5 21Z", shapeGroup);
         ToggleButton arrowTb    = shapeTool("Arrow", "fth-arrow-up-right", shapeGroup);
         ToggleButton textTb     = shapeTool("Text", "fth-type", shapeGroup);
         ToggleButton selectTb   = shapeTool("Select/Resize", "fth-mouse-pointer", shapeGroup);
@@ -554,23 +556,29 @@ public class TeacherUI {
         // ── PROPERTIES POPUP (Prompt 5) ────────────────────────────────────
         Label colorLbl = new Label("Color:");  colorLbl.getStyleClass().add("lbl-section");
         Label widthLbl = new Label("Width:");  widthLbl.getStyleClass().add("lbl-section");
+        Label widthValLbl = new Label();
+        widthValLbl.getStyleClass().add("lbl-subtitle");
+        widthValLbl.textProperty().bind(javafx.beans.binding.Bindings.createStringBinding(() ->
+            String.format("%.0f px", widthSlider.getValue()), widthSlider.valueProperty()));
+
+        HBox colorWidthRow = new HBox(15);
+        colorWidthRow.setAlignment(Pos.CENTER_LEFT);
+        colorWidthRow.getChildren().addAll(new HBox(5, colorLbl, colorPicker), new HBox(5, widthLbl, widthSlider, widthValLbl));
+
         VBox propertiesPopup = new VBox(10);
         propertiesPopup.getStyleClass().add("floating-panel");
         propertiesPopup.setAlignment(Pos.CENTER_LEFT);
-        propertiesPopup.getChildren().addAll(colorLbl, colorPicker, widthLbl, widthSlider, textFormatToolbar);
+        propertiesPopup.getChildren().addAll(colorWidthRow, textFormatToolbar);
         propertiesPopup.setOpacity(0.0);
         propertiesPopup.setVisible(false);
         propertiesPopup.setManaged(false);
-        
-        // Add properties somewhere else (like as a floating overlay, or just omit them from the rail)
-        // toolbar.getChildren().add(11, propertiesPopup);
 
         Runnable updatePropertiesVisibility = () -> {
             Toggle newT = shapeGroup.getSelectedToggle();
             boolean showProps = false;
             boolean showText = false;
             
-            if (newT == rectTb || newT == ellipseTb || newT == lineTb || newT == arrowTb) {
+            if (newT == freehandTb || newT == rectTb || newT == ellipseTb || newT == lineTb || newT == arrowTb) {
                 showProps = true;
             } else if (newT == textTb) {
                 showProps = true;
@@ -585,6 +593,12 @@ public class TeacherUI {
 
             textFormatToolbar.setVisible(showText);
             textFormatToolbar.setManaged(showText);
+            
+            if (showText) {
+                propertiesPopup.getChildren().setAll(colorWidthRow, textFormatToolbar);
+            } else {
+                propertiesPopup.getChildren().setAll(colorWidthRow);
+            }
             
             if (showProps && !propertiesPopup.isVisible()) {
                 propertiesPopup.setVisible(true);
@@ -691,20 +705,8 @@ public class TeacherUI {
         pptControls.setAlignment(Pos.CENTER_LEFT);
         pptControls.getStyleClass().add("ppt-controls");
 
-        pptImageView = new ImageView();
-        pptImageView.setPreserveRatio(true);
-        pptImageView.setSmooth(true);
-
-        javafx.scene.Group pptCanvasGroup = new javafx.scene.Group(pptWhiteboardPane);
-        StackPane pptCenter = new StackPane(pptImageView, pptCanvasGroup);
-        pptCenter.getStyleClass().add("ppt-center");
-        pptCenter.setAlignment(Pos.CENTER);
-        pptCenter.setStyle("-fx-background-color: #F8F9FA;"); // Fill PPT background
-        pptImageView.fitWidthProperty().bind(pptCenter.widthProperty());
-        pptImageView.fitHeightProperty().bind(pptCenter.heightProperty());
-
-        VBox pptPanel = new VBox(pptControls, pptCenter);
-        VBox.setVgrow(pptCenter, Priority.ALWAYS);
+        VBox pptPanel = new VBox(pptControls, pptWhiteboardPane);
+        VBox.setVgrow(pptWhiteboardPane, Priority.ALWAYS);
         pptTab = new Tab("  PPT Sharing  ", pptPanel);
         pptTab.setClosable(false);
 
@@ -805,8 +807,14 @@ public class TeacherUI {
             boolean drawVisible = (newTab != codeTab && newTab != fileTab);
             toolbar.setVisible(drawVisible);     toolbar.setManaged(drawVisible);
             shapeToolbar.setVisible(drawVisible); shapeToolbar.setManaged(drawVisible);
-            textFormatToolbar.setVisible(drawVisible && shapeGroup.getSelectedToggle() == textTb); 
-            textFormatToolbar.setManaged(drawVisible && shapeGroup.getSelectedToggle() == textTb);
+            
+            if (!drawVisible) {
+                propertiesPopup.setVisible(false);
+                propertiesPopup.setManaged(false);
+                propertiesPopup.setOpacity(0.0);
+            } else {
+                updatePropertiesVisibility.run();
+            }
             
             if (syncItem.isSelected() && server != null) {
                 server.broadcast(new Message(MessageType.TAB_SWITCH, tabPane.getSelectionModel().getSelectedIndex(), "Teacher"));
@@ -851,6 +859,11 @@ public class TeacherUI {
         mainLayout.setCenter(tabPane);
         
         toastPane = new javafx.scene.layout.StackPane(mainLayout);
+
+        StackPane.setAlignment(propertiesPopup, Pos.TOP_LEFT);
+        StackPane.setMargin(propertiesPopup, new Insets(120, 0, 0, 70)); // right of the 56px tool rail
+        propertiesPopup.setPickOnBounds(false);
+        toastPane.getChildren().add(propertiesPopup);
 
         // 3. Left Toolbar
         javafx.scene.layout.BorderPane leftSide = new javafx.scene.layout.BorderPane();
@@ -988,6 +1001,10 @@ public class TeacherUI {
         stage.setTitle("Classroom Collaboration — Teacher");
         stage.setMaximized(true);
         stage.show();
+        Platform.runLater(() -> {
+            whiteboardPane.zoomToFit();
+            pptWhiteboardPane.zoomToFit();
+        });
 
         stage.getScene().addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
             javafx.scene.Node focusOwner = stage.getScene().getFocusOwner();
@@ -1365,7 +1382,8 @@ public class TeacherUI {
             server.broadcast(new Message(MessageType.ANNOTATION_CLEAR, null, "Teacher_PPT"));
         }
         Image fxImg = new Image(new ByteArrayInputStream(sd.getImageBytes()));
-        pptImageView.setImage(fxImg);
+        pptWhiteboardPane.setBackgroundImage(fxImg);
+        pptWhiteboardPane.zoomToFit();
         if (server != null) server.broadcast(new Message(MessageType.PPT_SLIDE, sd, "Teacher"));
     }
 
