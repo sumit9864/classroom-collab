@@ -7,18 +7,13 @@ import javafx.scene.Cursor;
 import javafx.scene.Group;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
-import javafx.scene.control.TextArea;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.*;
 import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
-import javafx.scene.text.FontPosture;
-import javafx.scene.text.TextAlignment;
 import javafx.scene.text.Text;
-import javafx.scene.input.KeyCode;
-import javafx.geometry.VPos;
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -50,34 +45,15 @@ public class WhiteboardPane extends StackPane {
     private boolean annotationMode = false;
     private DrawMode drawMode      = DrawMode.FREEHAND;
     private Color  currentColor       = Color.BLACK;
-    private Color  canvasBgColor      = Color.WHITE;
-    private boolean isDarkTheme       = false;
+    private Color  canvasBgColor      = Color.WHITE;        // canvas fill (theme-aware)
+    private String containerBgStyle   = "#e0e0e0";          // outer pane bg (theme-aware)
     private double strokeWidth     = 2.0;
-    private final javafx.beans.property.DoubleProperty zoomProperty = new javafx.beans.property.SimpleDoubleProperty(1.0);
-    public javafx.beans.property.DoubleProperty zoomProperty() { return zoomProperty; }
     private double zoomLevel       = 1.0;
-    
-    private double panX = 0;
-    private double panY = 0;
-
+    // Scale transform with pivot at (0,0) — keeps the Group's bounds non-negative
+    // so the centering StackPane positions the canvas symmetrically (no left/top bias).
     private final javafx.scene.transform.Scale scaleTransform =
             new javafx.scene.transform.Scale(1, 1, 0, 0);
-    private final javafx.scene.transform.Translate panTransform = 
-            new javafx.scene.transform.Translate(0, 0);
-            
     private boolean isTransparentBackground = false;
-    private Canvas gridCanvas;
-    private Pane workspace;
-    private javafx.scene.control.Label emptyStateHint;
-    private boolean toolPicked = false;
-    
-    public void notifyToolPicked() {
-        toolPicked = true;
-        if (emptyStateHint != null) {
-            emptyStateHint.setVisible(false);
-        }
-    }
-
 
     // ── Unified Action History ────────────────────────────────────────────────
     public static class BoardAction {
@@ -102,16 +78,6 @@ public class WhiteboardPane extends StackPane {
     private final LinkedList<BoardAction> history   = new LinkedList<>();
     private final LinkedList<BoardAction> redoStack = new LinkedList<>();
     private boolean isUndoRedo = false;
-    
-    private final javafx.beans.property.BooleanProperty canUndoProperty = new javafx.beans.property.SimpleBooleanProperty(false);
-    public javafx.beans.property.BooleanProperty canUndoProperty() { return canUndoProperty; }
-    private final javafx.beans.property.BooleanProperty canRedoProperty = new javafx.beans.property.SimpleBooleanProperty(false);
-    public javafx.beans.property.BooleanProperty canRedoProperty() { return canRedoProperty; }
-    
-    private void updateUndoRedoProps() {
-        canUndoProperty.set(!history.isEmpty());
-        canRedoProperty.set(!redoStack.isEmpty());
-    }
 
     // ── Serializable full-state snapshot for late-join sync ───────────────────
     public static class FullState implements java.io.Serializable {
@@ -141,10 +107,6 @@ public class WhiteboardPane extends StackPane {
 
     // ── Selection state (teacher only) ────────────────────────────────────────
     private String               selectedShapeId = null;
-
-    public String getSelectedShapeId() {
-        return selectedShapeId;
-    }
     private final List<Rectangle> handles        = new ArrayList<>();
 
     // Shape creation drag
@@ -162,28 +124,6 @@ public class WhiteboardPane extends StackPane {
     private double       sDragX, sDragY;
     private double       origX, origY, origW, origH;
     private ShapeData    origSdCopy;
-
-    // ── Text Inline Editing State ─────────────────────────────────────────────
-    private String editingTextId = null;
-    private TextArea editingTextArea = null;
-    private boolean textClickPending = false;
-    private double textPressX, textPressY;
-    private Consumer<String> onSelectionChanged;
-    private long lastMeasureNs = 0;
-
-    // Default formatting for new TEXT shapes
-    private String  defaultFontFamily    = "System";
-    private double  defaultFontSize      = 24.0;
-    private boolean defaultBold          = false;
-    private boolean defaultItalic        = false;
-    private boolean defaultUnderline     = false;
-    private String  defaultTextAlignment = "LEFT";
-    
-    // Active formatting during inline editing
-    private String  activeFontFamily;
-    private double  activeFontSize;
-    private boolean activeBold, activeItalic, activeUnderline;
-    private String  activeAlignment;
 
     // ── Callbacks ─────────────────────────────────────────────────────────────
     private final Consumer<StrokeData> onStrokeDrawn;
@@ -214,9 +154,7 @@ public class WhiteboardPane extends StackPane {
     private long lastShapeDragNs = 0L;
     private static final long SHAPE_DRAG_INTERVAL_NS = 16_000_000L;
 
-    private javafx.scene.image.ImageView backgroundImageView;
-    private boolean userZoomed = false;
-
+    // ── Constructor ───────────────────────────────────────────────────────────
     public WhiteboardPane(boolean teacherMode, Consumer<StrokeData> onStrokeDrawn) {
         this.teacherMode   = teacherMode;
         this.onStrokeDrawn = onStrokeDrawn;
@@ -228,177 +166,28 @@ public class WhiteboardPane extends StackPane {
 
         progressOverlayCanvas = new Canvas(800, 500);
         progressGc = progressOverlayCanvas.getGraphicsContext2D();
-        progressOverlayCanvas.setMouseTransparent(true);
+        progressOverlayCanvas.setMouseTransparent(true); // never captures mouse events
 
         shapeOverlayPane = new Pane();
         shapeOverlayPane.setMinSize(800, 500);
         shapeOverlayPane.setPrefSize(800, 500);
         shapeOverlayPane.setMaxSize(800, 500);
+        // FREEHAND mode: overlay is transparent so canvas receives events
         shapeOverlayPane.setMouseTransparent(true);
 
-        backgroundImageView = new javafx.scene.image.ImageView();
-        backgroundImageView.setPreserveRatio(true);
-        backgroundImageView.setMouseTransparent(true);
-        
-        StackPane pageWrapper = new StackPane(backgroundImageView, whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
-        pageWrapper.setMinSize(800, 500);
-        pageWrapper.setPrefSize(800, 500);
-        pageWrapper.setMaxSize(800, 500);
-        pageWrapper.getStyleClass().add("page");
-        
-        Group zoomGroup = new Group(pageWrapper);
-        zoomGroup.getTransforms().addAll(panTransform, scaleTransform);
-        
-        gridCanvas = new Canvas();
-        gridCanvas.widthProperty().bind(widthProperty());
-        gridCanvas.heightProperty().bind(heightProperty());
-        widthProperty().addListener(e -> {
-            if (!userZoomed) zoomToFit();
-            drawWorkspaceBackground();
-        });
-        heightProperty().addListener(e -> {
-            if (!userZoomed) zoomToFit();
-            drawWorkspaceBackground();
-        });
-        
-        emptyStateHint = new javafx.scene.control.Label(teacherMode ? "Pick a tool to start drawing" : "Waiting for the teacher…");
-        emptyStateHint.setStyle("-fx-text-fill: #9ca3af; -fx-font-size: 16px;");
-        emptyStateHint.setMouseTransparent(true);
-
-        workspace = new Pane(gridCanvas, zoomGroup, emptyStateHint);
-        workspace.getStyleClass().add("workspace");
-        
-        getChildren().add(workspace);
-        
-        // Handle Empty State Centering
-        workspace.widthProperty().addListener((obs, o, n) -> {
-            emptyStateHint.setLayoutX((n.doubleValue() - emptyStateHint.prefWidth(-1)) / 2);
-        });
-        workspace.heightProperty().addListener((obs, o, n) -> {
-            emptyStateHint.setLayoutY((n.doubleValue() - emptyStateHint.prefHeight(-1)) / 2);
-        });
-
-        setupPanAndZoom();
+        getChildren().addAll(whiteboardCanvas, annotationCanvas, shapeOverlayPane, progressOverlayCanvas);
+        setStyle("-fx-background-color: " + containerBgStyle + ";");
+        setMinSize(800, 500);
+        setPrefSize(800, 500);
+        setMaxSize(800, 500);
+        // Register the pivot-(0,0) Scale transform once; setZoom() only updates its x/y values.
+        this.getTransforms().add(scaleTransform);
 
         redrawAll();
 
         if (teacherMode) {
             setupCanvasHandlers();
             setupOverlayHandlers();
-        }
-        
-        // Zoom to fit on first layout
-        widthProperty().addListener(new javafx.beans.value.ChangeListener<Number>() {
-            @Override
-            public void changed(javafx.beans.value.ObservableValue<? extends Number> obs, Number oldV, Number newV) {
-                if (newV.doubleValue() > 0 && oldV.doubleValue() == 0) {
-                    zoomToFit();
-                    widthProperty().removeListener(this);
-                }
-            }
-        });
-    }
-    
-    private void setupPanAndZoom() {
-        workspace.setOnScroll(e -> {
-            if (e.isControlDown()) {
-                e.consume();
-                double zoomDelta = e.getDeltaY() > 0 ? 0.1 : -0.1;
-                double newZoom = zoomLevel + zoomDelta;
-                newZoom = Math.max(0.25, Math.min(4.0, newZoom));
-                
-                if (newZoom != zoomLevel) {
-                    userZoomed = true;
-                    double f = (newZoom / zoomLevel) - 1;
-                    panX -= (e.getX() - panX) * f;
-                    panY -= (e.getY() - panY) * f;
-                    zoomLevel = newZoom;
-                    updateZoomAndPan();
-                }
-            }
-        });
-
-        // Middle-mouse or Space+drag panning
-        class PanState { boolean panning; double anchorX, anchorY, startPanX, startPanY; }
-        PanState ps = new PanState();
-        
-        workspace.setOnMousePressed(e -> {
-            if (e.isMiddleButtonDown() || (e.isPrimaryButtonDown() && e.isAltDown())) { // Allow Alt+Drag if Space is hard to hook
-                ps.panning = true;
-                ps.anchorX = e.getX();
-                ps.anchorY = e.getY();
-                ps.startPanX = panX;
-                ps.startPanY = panY;
-                e.consume();
-            }
-        });
-        workspace.setOnMouseDragged(e -> {
-            if (ps.panning) {
-                userZoomed = true;
-                panX = ps.startPanX + (e.getX() - ps.anchorX);
-                panY = ps.startPanY + (e.getY() - ps.anchorY);
-                updateZoomAndPan();
-                e.consume();
-            }
-        });
-        workspace.setOnMouseReleased(e -> {
-            ps.panning = false;
-        });
-    }
-
-    private void updateZoomAndPan() {
-        zoomProperty.set(zoomLevel);
-        scaleTransform.setX(zoomLevel);
-        scaleTransform.setY(zoomLevel);
-        panTransform.setX(panX);
-        panTransform.setY(panY);
-        drawWorkspaceBackground();
-    }
-    
-    public void zoomToFit() {
-        double cw = getCanvasW();
-        double ch = getCanvasH();
-        double ww = getWidth();
-        double wh = getHeight();
-        if (cw == 0 || ch == 0 || ww == 0 || wh == 0) return;
-        
-        double padding = 0; // Removing padding helps fit perfectly, or adjust if needed.
-        double scaleX = (ww - padding * 2) / cw;
-        double scaleY = (wh - padding * 2) / ch;
-        double newZoom = Math.min(scaleX, scaleY);
-        newZoom = Math.max(0.25, Math.min(4.0, newZoom));
-        
-        zoomLevel = newZoom;
-        panX = (ww - (cw * zoomLevel)) / 2.0;
-        panY = (wh - (ch * zoomLevel)) / 2.0;
-        updateZoomAndPan();
-    }
-
-    private void drawWorkspaceBackground() {
-        if (gridCanvas == null) return;
-        GraphicsContext gc = gridCanvas.getGraphicsContext2D();
-        double w = getWidth();
-        double h = getHeight();
-        gc.clearRect(0, 0, w, h);
-        
-        if (isTransparentBackground) return;
-        
-        gc.setFill(Color.web(isDarkTheme ? "#14161A" : "#F8F9FA"));
-        gc.fillRect(0, 0, w, h);
-        
-        gc.setFill(Color.web(isDarkTheme ? "#30343E" : "#D1D5DB"));
-        double spacing = 20 * zoomLevel;
-        if (spacing < 5) return; 
-        
-        double startX = panX % spacing;
-        if (startX < 0) startX += spacing;
-        double startY = panY % spacing;
-        if (startY < 0) startY += spacing;
-        
-        for (double x = startX; x < w; x += spacing) {
-            for (double y = startY; y < h; y += spacing) {
-                gc.fillOval(x - 0.5, y - 0.5, 1.5, 1.5);
-            }
         }
     }
 
@@ -413,10 +202,6 @@ public class WhiteboardPane extends StackPane {
 
     public void setStrokeProgressCallback(Consumer<StrokeData> callback) {
         this.onStrokeProgress = callback;
-    }
-
-    public void setOnSelectionChanged(Consumer<String> callback) {
-        this.onSelectionChanged = callback;
     }
 
     // ── FREEHAND canvas mouse handlers ────────────────────────────────────────
@@ -520,41 +305,40 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setOnMousePressed(e -> {
             if (!e.isPrimaryButtonDown()) return;
             e.consume(); // prevent ScrollPane from capturing the drag
-            if (drawMode == DrawMode.SHAPE_TEXT) {
-                if (editingTextId != null) commitEditing();
-                textClickPending = true;
-                textPressX = e.getX();
-                textPressY = e.getY();
-                return;
-            }
             if (drawMode == DrawMode.SELECT) {
                 clearHandles();
                 selectedShapeId = null;
-                if (onSelectionChanged != null) onSelectionChanged.accept(null);
             } else if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER) {
                 shapeDragX = e.getX();
                 shapeDragY = e.getY();
                 startPreview(e.getX(), e.getY());
 
                 // For non-TEXT shapes: create a zero-size shape immediately and broadcast SHAPE_ADD.
-                ShapeData earlyShape = createShapeFromBounds(
-                    shapeDragX, shapeDragY, shapeDragX, shapeDragY);
-                if (earlyShape != null) {
-                    shapeDataMap.put(earlyShape.getId(), earlyShape);
-                    Group g = buildGroup(earlyShape);
-                    shapeNodeMap.put(earlyShape.getId(), g);
-                    shapeOverlayPane.getChildren().add(g);
-                    currentDragShapeId = earlyShape.getId();
-                    if (onShapeAdded != null) onShapeAdded.accept(earlyShape);
+                // This lets students see the shape appear and stretch in real time as the teacher drags.
+                if (drawMode != DrawMode.SHAPE_TEXT) {
+                    ShapeData earlyShape = createShapeFromBounds(
+                        shapeDragX, shapeDragY, shapeDragX, shapeDragY);
+                    if (earlyShape != null) {
+                        // Add to internal maps without recording history yet.
+                        // History is recorded in finalizeShape() so undo still works as one atomic action.
+                        shapeDataMap.put(earlyShape.getId(), earlyShape);
+                        Group g = buildGroup(earlyShape);
+                        shapeNodeMap.put(earlyShape.getId(), g);
+                        shapeOverlayPane.getChildren().add(g);
+                        currentDragShapeId = earlyShape.getId();
+                        // Broadcast SHAPE_ADD so students see the shape appear
+                        if (onShapeAdded != null) onShapeAdded.accept(earlyShape);
+                    }
                 }
             }
         });
         shapeOverlayPane.setOnMouseDragged(e -> {
             if (!e.isPrimaryButtonDown()) return;
             e.consume(); // prevent ScrollPane from panning
-            if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT && drawMode != DrawMode.SHAPE_TEXT) {
+            if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 updatePreview(e.getX(), e.getY());
 
+                // Update the tracked shape geometry and broadcast SHAPE_UPDATE (throttled)
                 if (currentDragShapeId != null) {
                     ShapeData sd = shapeDataMap.get(currentDragShapeId);
                     if (sd != null) {
@@ -571,17 +355,6 @@ public class WhiteboardPane extends StackPane {
         });
         shapeOverlayPane.setOnMouseReleased(e -> {
             e.consume(); // prevent ScrollPane from capturing the event
-            if (drawMode == DrawMode.SHAPE_TEXT) {
-                if (textClickPending) {
-                    textClickPending = false;
-                    double dx = e.getX() - textPressX;
-                    double dy = e.getY() - textPressY;
-                    if (Math.hypot(dx, dy) < 5) {
-                        startInlineEditing(textPressX, textPressY, null);
-                    }
-                }
-                return;
-            }
             if (drawMode != DrawMode.FREEHAND && drawMode != DrawMode.ERASER && drawMode != DrawMode.SELECT) {
                 finalizeShape(e.getX(), e.getY());
             }
@@ -593,7 +366,7 @@ public class WhiteboardPane extends StackPane {
         if (previewNode != null) shapeOverlayPane.getChildren().remove(previewNode);
         Color c = currentColor;
         switch (drawMode) {
-            case SHAPE_RECT: {
+            case SHAPE_RECT: case SHAPE_TEXT: {
                 Rectangle r = new Rectangle(x, y, 1, 1);
                 r.setStroke(c); r.setFill(Color.TRANSPARENT); r.setStrokeWidth(strokeWidth);
                 r.getStrokeDashArray().addAll(6.0, 3.0);
@@ -660,6 +433,23 @@ public class WhiteboardPane extends StackPane {
             previewNode = null;
         }
 
+        if (drawMode == DrawMode.SHAPE_TEXT) {
+            // TEXT shapes are not pre-created on press — show dialog and create now
+            double x0 = Math.min(shapeDragX, x), y0 = Math.min(shapeDragY, y);
+            double w  = Math.abs(x - shapeDragX),   h  = Math.abs(y - shapeDragY);
+            TextInputDialog dlg = new TextInputDialog();
+            dlg.setTitle("Text Box");
+            dlg.setHeaderText("Enter text for the text box:");
+            dlg.setContentText("Text:");
+            Optional<String> res = dlg.showAndWait();
+            if (!res.isPresent() || res.get().isBlank()) return;
+            ShapeData sd = new ShapeData(ShapeType.TEXT, x0, y0,
+                    Math.max(w, 80), Math.max(h, 28),
+                    toHex(currentColor), strokeWidth, res.get(), 14.0, annotationMode);
+            addShapeInternal(sd); // recordAction + broadcast SHAPE_ADD
+            return;
+        }
+
         // For shapes tracked via currentDragShapeId (RECT, ELLIPSE, LINE, ARROW)
         if (currentDragShapeId != null) {
             ShapeData sd = shapeDataMap.get(currentDragShapeId);
@@ -687,228 +477,6 @@ public class WhiteboardPane extends StackPane {
                 }
             }
             currentDragShapeId = null;
-        }
-    }
-
-    // ── Inline Text Editing ───────────────────────────────────────────────────
-    private void startInlineEditing(double x, double y, String existingId) {
-        editingTextId = existingId;
-        editingTextArea = new TextArea();
-        editingTextArea.getStyleClass().add("canvas-text-editor");
-        editingTextArea.setWrapText(true);
-        editingTextArea.setLayoutX(x);
-        editingTextArea.setLayoutY(y);
-
-        ShapeData sd = existingId != null ? shapeDataMap.get(existingId) : null;
-        
-        activeFontFamily = sd != null ? sd.getFontFamily() : defaultFontFamily;
-        activeFontSize   = sd != null ? sd.getFontSize() : defaultFontSize;
-        activeBold       = sd != null ? sd.isBold() : defaultBold;
-        activeItalic     = sd != null ? sd.isItalic() : defaultItalic;
-        activeUnderline  = sd != null ? sd.isUnderline() : defaultUnderline;
-        activeAlignment  = sd != null ? sd.getTextAlignment() : defaultTextAlignment;
-        
-        updateEditingTextAreaStyle();
-
-        if (sd != null) {
-            editingTextArea.setText(sd.getText() != null ? sd.getText() : "");
-            if (!sd.isAutoWidth()) {
-                editingTextArea.setPrefWidth(sd.getW());
-                editingTextArea.setPrefHeight(sd.getH());
-            } else {
-                measureTextWidth();
-            }
-            Group g = shapeNodeMap.get(existingId);
-            if (g != null) g.setVisible(false);
-        } else {
-            editingTextArea.setText("");
-            measureTextWidth();
-        }
-
-        editingTextArea.textProperty().addListener((obs, oldVal, newVal) -> {
-            long now = System.nanoTime();
-            if (now - lastMeasureNs >= 16_000_000L) {
-                lastMeasureNs = now;
-                measureTextWidth();
-            } else {
-                javafx.application.Platform.runLater(this::measureTextWidth);
-            }
-        });
-
-        editingTextArea.focusedProperty().addListener((obs, wasFocused, isFocused) -> {
-            if (!isFocused) commitEditing();
-        });
-
-        editingTextArea.setOnKeyPressed(e -> {
-            if (e.getCode() == KeyCode.ESCAPE) {
-                e.consume();
-                commitEditing();
-            }
-        });
-
-        shapeOverlayPane.getChildren().add(editingTextArea);
-        editingTextArea.requestFocus();
-        
-        if (onSelectionChanged != null) onSelectionChanged.accept(existingId != null ? existingId : "NEW_TEXT");
-    }
-
-    private void updateEditingTextAreaStyle() {
-        if (editingTextArea == null) return;
-        editingTextArea.setStyle(String.format(
-            "-fx-font-family: '%s'; -fx-font-size: %.1fpx; -fx-font-weight: %s; -fx-font-style: %s; -fx-text-alignment: %s;",
-            activeFontFamily, activeFontSize, activeBold ? "bold" : "normal", activeItalic ? "italic" : "normal", activeAlignment.toLowerCase()
-        ));
-    }
-
-    private void measureTextWidth() {
-        if (editingTextArea == null) return;
-        boolean isAutoWidth = true;
-        if (editingTextId != null) {
-            ShapeData sd = shapeDataMap.get(editingTextId);
-            if (sd != null && !sd.isAutoWidth()) isAutoWidth = false;
-        }
-        if (!isAutoWidth) return;
-
-        Text temp = new Text(editingTextArea.getText() + "W"); 
-        temp.setFont(Font.font(
-                activeFontFamily,
-                activeBold ? FontWeight.BOLD : FontWeight.NORMAL,
-                activeItalic ? FontPosture.ITALIC : FontPosture.REGULAR,
-                activeFontSize
-        ));
-        double width = Math.max(20, temp.getLayoutBounds().getWidth());
-        editingTextArea.setPrefWidth(width);
-    }
-
-    public void commitEditing() {
-        if (editingTextArea == null) return;
-        
-        String content = editingTextArea.getText();
-        String id = editingTextId;
-        boolean isExisting = (id != null);
-        
-        ShapeData oldSdCopy = null;
-        if (isExisting) {
-            ShapeData sd = shapeDataMap.get(id);
-            if (sd != null) {
-                oldSdCopy = sd.copy();
-                Group g = shapeNodeMap.get(id);
-                if (g != null) g.setVisible(true); 
-            }
-        }
-        
-        shapeOverlayPane.getChildren().remove(editingTextArea);
-        double finalW = editingTextArea.getWidth();
-        double finalH = editingTextArea.getHeight();
-        editingTextArea = null;
-        editingTextId = null;
-
-        if (content == null || content.isBlank()) {
-            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId);
-            return; 
-        }
-
-        ShapeData sd;
-        if (isExisting && oldSdCopy != null) {
-            sd = shapeDataMap.get(id);
-            sd.setText(content);
-            sd.setFontFamily(activeFontFamily);
-            sd.setFontSize(activeFontSize);
-            sd.setBold(activeBold);
-            sd.setItalic(activeItalic);
-            sd.setUnderline(activeUnderline);
-            sd.setTextAlignment(activeAlignment);
-            
-            syncNodeFromData(sd);
-            Group g = shapeNodeMap.get(id);
-            if (g != null) {
-                for (javafx.scene.Node n : g.getChildren()) {
-                    if (n instanceof Text) {
-                        sd.setH(((Text)n).getLayoutBounds().getHeight());
-                        if (sd.isAutoWidth()) {
-                             sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
-                        }
-                    }
-                }
-            }
-            syncNodeFromData(sd); 
-            recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSdCopy));
-            if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
-            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId);
-        } else {
-            sd = new ShapeData(ShapeType.TEXT, textPressX, textPressY, finalW, finalH,
-                    toHex(currentColor), strokeWidth, content, activeFontSize, annotationMode);
-            sd.setFontFamily(activeFontFamily);
-            sd.setBold(activeBold);
-            sd.setItalic(activeItalic);
-            sd.setUnderline(activeUnderline);
-            sd.setTextAlignment(activeAlignment);
-            sd.setAutoWidth(true);
-            
-            addShapeInternal(sd); 
-            
-            Group g = shapeNodeMap.get(sd.getId());
-            if (g != null) {
-                for (javafx.scene.Node n : g.getChildren()) {
-                    if (n instanceof Text) {
-                        sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
-                        sd.setH(((Text)n).getLayoutBounds().getHeight());
-                    }
-                }
-            }
-            syncNodeFromData(sd);
-            if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
-            if (onSelectionChanged != null) onSelectionChanged.accept(selectedShapeId); 
-        }
-    }
-
-    public void applyTextFormatting(String fontFamily, double fontSize, boolean bold, boolean italic, boolean underline, String alignment, String colorHex) {
-        if (editingTextArea != null) {
-            activeFontFamily = fontFamily;
-            activeFontSize = fontSize;
-            activeBold = bold;
-            activeItalic = italic;
-            activeUnderline = underline;
-            activeAlignment = alignment;
-            currentColor = Color.web(colorHex);
-            updateEditingTextAreaStyle();
-        } else if (selectedShapeId != null) {
-            ShapeData sd = shapeDataMap.get(selectedShapeId);
-            if (sd != null && sd.getType() == ShapeType.TEXT) {
-                ShapeData oldSd = sd.copy();
-                sd.setFontFamily(fontFamily);
-                sd.setFontSize(fontSize);
-                sd.setBold(bold);
-                sd.setItalic(italic);
-                sd.setUnderline(underline);
-                sd.setTextAlignment(alignment);
-                sd.setStrokeHex(colorHex);
-                
-                syncNodeFromData(sd);
-                Group g = shapeNodeMap.get(selectedShapeId);
-                if (g != null) {
-                    for (javafx.scene.Node n : g.getChildren()) {
-                        if (n instanceof Text) {
-                            if (sd.isAutoWidth()) {
-                                sd.setW(Math.max(20, ((Text)n).getLayoutBounds().getWidth()));
-                            }
-                            sd.setH(((Text)n).getLayoutBounds().getHeight());
-                        }
-                    }
-                }
-                syncNodeFromData(sd);
-                
-                recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSd));
-                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
-            }
-        } else {
-            defaultFontFamily = fontFamily;
-            defaultFontSize = fontSize;
-            defaultBold = bold;
-            defaultItalic = italic;
-            defaultUnderline = underline;
-            defaultTextAlignment = alignment;
-            currentColor = Color.web(colorHex);
         }
     }
 
@@ -1028,23 +596,10 @@ public class WhiteboardPane extends StackPane {
                 border.setFill(Color.TRANSPARENT);
                 border.setStrokeWidth(1);
                 border.getStrokeDashArray().addAll(4.0, 2.0);
-                border.setVisible(selectedShapeId != null && selectedShapeId.equals(sd.getId()));
-
-                Text txt = new Text(sd.getText() != null ? sd.getText() : "");
+                Text txt = new Text(sd.getX() + 4, sd.getY() + sd.getFontSize() + 4, sd.getText());
                 txt.setFill(c);
-                txt.setFont(Font.font(
-                    sd.getFontFamily(), 
-                    sd.isBold() ? FontWeight.BOLD : FontWeight.NORMAL,
-                    sd.isItalic() ? FontPosture.ITALIC : FontPosture.REGULAR,
-                    sd.getFontSize()
-                ));
-                txt.setUnderline(sd.isUnderline());
-                txt.setTextAlignment(TextAlignment.valueOf(sd.getTextAlignment()));
-                txt.setWrappingWidth(sd.getW());
-                txt.setTextOrigin(VPos.TOP);
-                txt.setX(sd.getX());
-                txt.setY(sd.getY());
-                
+                txt.setFont(Font.font(sd.getFontSize()));
+                txt.setWrappingWidth(sd.getW() - 8);
                 g.getChildren().addAll(border, txt);
                 break;
             }
@@ -1119,17 +674,8 @@ public class WhiteboardPane extends StackPane {
                     } else if (n instanceof Text) {
                         Text t = (Text) n;
                         t.setText(sd.getText() != null ? sd.getText() : "");
-                        t.setX(sd.getX()); t.setY(sd.getY());
-                        t.setFont(Font.font(
-                            sd.getFontFamily(), 
-                            sd.isBold() ? FontWeight.BOLD : FontWeight.NORMAL,
-                            sd.isItalic() ? FontPosture.ITALIC : FontPosture.REGULAR,
-                            sd.getFontSize()
-                        ));
-                        t.setUnderline(sd.isUnderline());
-                        t.setTextAlignment(TextAlignment.valueOf(sd.getTextAlignment()));
-                        t.setWrappingWidth(sd.getW());
-                        t.setFill(Color.web(sd.getStrokeHex()));
+                        t.setX(sd.getX() + 4); t.setY(sd.getY() + sd.getFontSize() + 4);
+                        t.setWrappingWidth(sd.getW() - 8);
                     }
                 }
                 break;
@@ -1150,20 +696,9 @@ public class WhiteboardPane extends StackPane {
 
     // ── Interactive move (teacher SELECT mode) ────────────────────────────────
     private void wireGroupInteraction(Group g, String id) {
-        // Double-click: edit text content (TEXT shapes only, SELECT mode)
-        // Or single click in SHAPE_TEXT mode
+        // Single-click: select & start move
         g.setOnMousePressed(e -> {
-            if (!e.isPrimaryButtonDown()) return;
-            if (drawMode == DrawMode.SHAPE_TEXT) {
-                ShapeData sd = shapeDataMap.get(id);
-                if (sd != null && sd.getType() == ShapeType.TEXT) {
-                    e.consume();
-                    if (editingTextId != null) commitEditing();
-                    startInlineEditing(sd.getX(), sd.getY(), id);
-                }
-                return;
-            }
-            if (drawMode != DrawMode.SELECT) return;
+            if (drawMode != DrawMode.SELECT || !e.isPrimaryButtonDown()) return;
             e.consume();
             selectShape(id);
             selectAction = SelectAction.MOVING;
@@ -1174,15 +709,52 @@ public class WhiteboardPane extends StackPane {
                 origSdCopy = sd.copy(); 
             }
         });
-        
+        g.setOnMouseDragged(e -> {
+            if (drawMode != DrawMode.SELECT || selectAction != SelectAction.MOVING) return;
+            e.consume();
+            double dx = (e.getSceneX() - sDragX) / zoomLevel;
+            double dy = (e.getSceneY() - sDragY) / zoomLevel;
+            ShapeData sd = shapeDataMap.get(id);
+            if (sd == null) return;
+            sd.setX(origX + dx); sd.setY(origY + dy);
+            syncNodeFromData(sd);
+            updateHandles();
+            // Stream position to students while dragging (throttled)
+            long nowDrag = System.nanoTime();
+            if (nowDrag - lastShapeDragNs >= SHAPE_DRAG_INTERVAL_NS) {
+                lastShapeDragNs = nowDrag;
+                if (onShapeUpdated != null) onShapeUpdated.accept(sd.copy());
+            }
+        });
+        g.setOnMouseReleased(e -> {
+            if (drawMode != DrawMode.SELECT || selectAction != SelectAction.MOVING) return;
+            e.consume();
+            selectAction = SelectAction.NONE;
+            ShapeData sd = shapeDataMap.get(id);
+            if (sd != null && onShapeUpdated != null) {
+                if (origSdCopy != null) recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), origSdCopy));
+                origSdCopy = null;
+                onShapeUpdated.accept(sd);
+            }
+        });
+
+        // Double-click: edit text content (TEXT shapes only, SELECT mode)
         g.setOnMouseClicked(e -> {
             if (drawMode != DrawMode.SELECT || e.getClickCount() != 2) return;
             ShapeData sd = shapeDataMap.get(id);
             if (sd == null || sd.getType() != ShapeType.TEXT) return;
             e.consume();
-            if (editingTextId != null) commitEditing();
-            startInlineEditing(sd.getX(), sd.getY(), id);
-            clearHandles(); 
+            ShapeData oldSdCopy = sd.copy();
+            TextInputDialog dlg = new TextInputDialog(sd.getText() != null ? sd.getText() : "");
+            dlg.setTitle("Edit Text Box");
+            dlg.setHeaderText("Edit the text content:");
+            dlg.setContentText("Text:");
+            Optional<String> res = dlg.showAndWait();
+            if (!res.isPresent() || res.get().isBlank()) return;
+            sd.setText(res.get());
+            syncNodeFromData(sd);
+            recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), oldSdCopy));
+            if (onShapeUpdated != null) onShapeUpdated.accept(sd);
         });
     }
 
@@ -1192,32 +764,14 @@ public class WhiteboardPane extends StackPane {
         clearHandles();
         ShapeData sd = shapeDataMap.get(id);
         if (sd == null) return;
-        
-        if (sd.getType() == ShapeType.TEXT) {
-            Group g = shapeNodeMap.get(id);
-            if (g != null && !g.getChildren().isEmpty()) {
-                g.getChildren().get(0).setVisible(true);
-            }
-        }
-        
         double[][] pts = handlePositions(sd);
         for (int i = 0; i < pts.length; i++) {
             handles.add(makeHandle(i, pts[i][0], pts[i][1]));
         }
         shapeOverlayPane.getChildren().addAll(handles);
-        if (onSelectionChanged != null) onSelectionChanged.accept(id);
     }
 
     private void clearHandles() {
-        if (selectedShapeId != null) {
-            ShapeData sd = shapeDataMap.get(selectedShapeId);
-            if (sd != null && sd.getType() == ShapeType.TEXT) {
-                Group g = shapeNodeMap.get(selectedShapeId);
-                if (g != null && !g.getChildren().isEmpty()) {
-                    g.getChildren().get(0).setVisible(false);
-                }
-            }
-        }
         shapeOverlayPane.getChildren().removeAll(handles);
         handles.clear();
     }
@@ -1296,9 +850,6 @@ public class WhiteboardPane extends StackPane {
             selectAction = SelectAction.NONE;
             ShapeData sd = shapeDataMap.get(selectedShapeId);
             if (sd != null && onShapeUpdated != null) {
-                if (sd.getType() == ShapeType.TEXT && sd.isAutoWidth()) {
-                    sd.setAutoWidth(false);
-                }
                 if (origSdCopy != null) recordAction(new BoardAction(BoardAction.Type.SHAPE_UPDATE, null, sd.copy(), origSdCopy));
                 origSdCopy = null;
                 onShapeUpdated.accept(sd);
@@ -1357,7 +908,6 @@ public class WhiteboardPane extends StackPane {
         selectedShapeId = null;
         removeShape(id);
         if (onShapeRemoved != null) onShapeRemoved.accept(id);
-        if (onSelectionChanged != null) onSelectionChanged.accept(null);
     }
 
     /** Returns a full snapshot of current whiteboard state for late-joining students. */
@@ -1409,16 +959,12 @@ public class WhiteboardPane extends StackPane {
 
     // \u2500\u2500 Mode switch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     public void setDrawMode(DrawMode mode) {
-        if (editingTextId != null && (mode != DrawMode.SHAPE_TEXT && mode != DrawMode.SELECT)) {
-            commitEditing();
-        }
         this.drawMode = mode;
         boolean shapeOrSelect = (mode != DrawMode.FREEHAND && mode != DrawMode.ERASER);
         shapeOverlayPane.setMouseTransparent(!shapeOrSelect || !teacherMode);
         if (!shapeOrSelect) {
             clearHandles();
             selectedShapeId = null;
-            if (onSelectionChanged != null) onSelectionChanged.accept(null);
         }
     }
 
@@ -1437,7 +983,6 @@ public class WhiteboardPane extends StackPane {
         history.addLast(action);
         if (history.size() > 100) history.removeFirst();
         redoStack.clear();
-        updateUndoRedoProps();
     }
 
     public void recordStroke(StrokeData stroke) {
@@ -1547,7 +1092,6 @@ public class WhiteboardPane extends StackPane {
         List<String> toRemove = shapeDataMap.values().stream()
                 .filter(s -> !s.isAnnotation()).map(ShapeData::getId).collect(Collectors.toList());
         toRemove.forEach(this::silentRemoveShape);
-        updateUndoRedoProps();
     }
 
     public void clearAnnotations() {
@@ -1560,7 +1104,6 @@ public class WhiteboardPane extends StackPane {
         List<String> toRemove = shapeDataMap.values().stream()
                 .filter(ShapeData::isAnnotation).map(ShapeData::getId).collect(Collectors.toList());
         toRemove.forEach(this::silentRemoveShape);
-        updateUndoRedoProps();
     }
 
     /**
@@ -1585,7 +1128,6 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
-        updateUndoRedoProps();
         return getFullState();
     }
 
@@ -1610,7 +1152,6 @@ public class WhiteboardPane extends StackPane {
         } finally {
             isUndoRedo = false;
         }
-        updateUndoRedoProps();
         return getFullState();
     }
 
@@ -1640,31 +1181,13 @@ public class WhiteboardPane extends StackPane {
         if (isTransparentBackground) {
             wbGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         } else {
-            wbGc.setFill(isDarkTheme ? Color.web("#20232A") : Color.WHITE);
+            wbGc.setFill(canvasBgColor);
             wbGc.fillRect(0, 0, getCanvasW(), getCanvasH());
         }
         annGc.clearRect(0, 0, getCanvasW(), getCanvasH());
         annGc.beginPath();
         for (BoardAction a : history) {
             if (a.type == BoardAction.Type.STROKE) drawStrokeOnly(a.stroke);
-        }
-        
-        boolean hasContent = !shapeDataMap.isEmpty() || !history.isEmpty();
-        if (emptyStateHint != null) {
-            if (teacherMode) {
-                emptyStateHint.setVisible(!hasContent && !toolPicked);
-            } else {
-                emptyStateHint.setVisible(!hasContent);
-            }
-        }
-    }
-
-    public void setBackgroundImage(javafx.scene.image.Image img) {
-        userZoomed = false;
-        if (backgroundImageView != null) {
-            backgroundImageView.setImage(img);
-            backgroundImageView.setFitWidth(getCanvasW());
-            backgroundImageView.setFitHeight(getCanvasH());
         }
     }
 
@@ -1676,24 +1199,8 @@ public class WhiteboardPane extends StackPane {
         shapeOverlayPane.setMinSize(w, h);
         shapeOverlayPane.setPrefSize(w, h);
         shapeOverlayPane.setMaxSize(w, h);
-        
-        if (backgroundImageView != null) {
-            backgroundImageView.setFitWidth(w);
-            backgroundImageView.setFitHeight(h);
-        }
-        if (workspace != null) {
-            for (javafx.scene.Node n : workspace.getChildren()) {
-                if (n instanceof Group) {
-                    Group g = (Group)n;
-                    if (!g.getChildren().isEmpty() && g.getChildren().get(0) instanceof StackPane) {
-                        StackPane pw = (StackPane)g.getChildren().get(0);
-                        pw.setMinSize(w, h); pw.setPrefSize(w, h); pw.setMaxSize(w, h);
-                    }
-                }
-            }
-        }
+        setMinSize(w, h); setPrefSize(w, h); setMaxSize(w, h);
         redrawAll();
-        zoomToFit();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1722,19 +1229,16 @@ public class WhiteboardPane extends StackPane {
 
     public double getZoom() { return zoomLevel; }
     public void setZoom(double level) {
-        userZoomed = true;
-        level = Math.max(0.25, Math.min(4.0, level));
-        if (level == zoomLevel) return;
-        
-        double cx = getWidth() / 2.0;
-        double cy = getHeight() / 2.0;
-        double f = (level / zoomLevel) - 1;
-        
-        panX -= (cx - panX) * f;
-        panY -= (cy - panY) * f;
-        
-        zoomLevel = level;
-        updateZoomAndPan();
+        // Round to 1 decimal place to prevent floating-point drift (e.g. 0.999... or 0.7001...)
+        level = Math.round(level * 10.0) / 10.0;
+        if (level < 0.5) level = 0.5;
+        if (level > 3.0) level = 3.0;
+        this.zoomLevel = level;
+        // Use the pivot-(0,0) Scale transform instead of setScaleX/Y.
+        // setScaleX/Y pivots from node centre, pushing visual bounds into negative
+        // coordinates in the parent Group and breaking the centering StackPane layout.
+        scaleTransform.setX(level);
+        scaleTransform.setY(level);
     }
     
     public void setTransparentBackground(boolean transparent) {
@@ -1742,9 +1246,8 @@ public class WhiteboardPane extends StackPane {
         if (transparent) {
             setStyle("-fx-background-color: transparent;");
         } else {
-            setStyle(""); // The background is handled by drawWorkspaceBackground now
+            setStyle("-fx-background-color: " + containerBgStyle + ";");
         }
-        drawWorkspaceBackground();
         redrawAll();
     }
 
@@ -1756,8 +1259,10 @@ public class WhiteboardPane extends StackPane {
      */
     public void setCanvasBgColor(Color canvas, String containerHex) {
         this.canvasBgColor    = canvas;
-        this.isDarkTheme      = containerHex.equals("#0d1117") || containerHex.contains("14161A");
-        drawWorkspaceBackground();
+        this.containerBgStyle = containerHex;
+        if (!isTransparentBackground) {
+            setStyle("-fx-background-color: " + containerHex + ";");
+        }
         redrawAll();
     }
 }

@@ -2,12 +2,7 @@ package com.classroom.util;
 
 import com.classroom.model.Message;
 import java.io.*;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
 import java.net.Socket;
-import java.util.ArrayList;
-import java.util.Enumeration;
-import java.util.List;
 
 public class NetworkUtil {
 
@@ -16,10 +11,14 @@ public class NetworkUtil {
      * Calls reset() first to prevent stale object cache issues.
      * Flushes after write.
      */
-    public static void sendMessage(ObjectOutputStream out, Message msg) throws IOException {
-        out.reset();
-        out.writeObject(msg);
-        out.flush();
+    public static void sendMessage(ObjectOutputStream out, Message msg) {
+        try {
+            out.reset();
+            out.writeObject(msg);
+            out.flush();
+        } catch (IOException e) {
+            System.err.println("[NetworkUtil] sendMessage error: " + e.getMessage());
+        }
     }
 
     /**
@@ -131,54 +130,5 @@ public class NetworkUtil {
             "[B;"                                             +   // byte[]
             "!*"                                              // reject all others
         );
-    }
-
-    /**
-     * Enumerates network interfaces to find the best local IP address for the teacher server.
-     * Skips loopback, down, virtual (isVirtual()), and VPN/VM adapters based on name.
-     * Prefers isSiteLocalAddress() IPv4 on an interface that is up.
-     * @return A list of candidate IPs. If empty, falls back to getLocalHost().
-     */
-    public static List<String> findBestLocalIp() {
-        List<String> candidates = new ArrayList<>();
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces != null && interfaces.hasMoreElements()) {
-                NetworkInterface ni = interfaces.nextElement();
-                if (!ni.isUp() || ni.isLoopback() || ni.isVirtual()) continue;
-                if (!isInterfaceNameAllowed(ni.getName()) || !isInterfaceNameAllowed(ni.getDisplayName())) continue;
-                
-                Enumeration<InetAddress> addresses = ni.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress addr = addresses.nextElement();
-                    if (!addr.isLoopbackAddress() && addr.isSiteLocalAddress() && addr.getHostAddress().contains(".")) {
-                        candidates.add(addr.getHostAddress());
-                    }
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("[NetworkUtil] Error finding local IP: " + e.getMessage());
-        }
-        
-        if (candidates.isEmpty()) {
-            try {
-                candidates.add(InetAddress.getLocalHost().getHostAddress());
-            } catch (Exception e) {
-                candidates.add("127.0.0.1");
-            }
-        }
-        return candidates;
-    }
-
-    /**
-     * Helper to filter out VM/VPN adapters by name.
-     * Public so it can be tested easily.
-     */
-    public static boolean isInterfaceNameAllowed(String name) {
-        if (name == null) return true;
-        String lower = name.toLowerCase();
-        return !(lower.contains("vbox") || lower.contains("vmware") || lower.contains("virtual") 
-                || lower.contains("hyper-v") || lower.contains("wsl") || lower.contains("docker") 
-                || lower.contains("tailscale") || lower.contains("vpn") || lower.contains("vmnet"));
     }
 }

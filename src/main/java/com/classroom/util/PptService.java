@@ -249,22 +249,6 @@ public class PptService {
         return getCurrentSlideData();
     }
 
-    /** Goes to the specified slide and returns its SlideData. */
-    public SlideData goTo(int index) {
-        if (!loaded || index < 0 || index >= totalSlides) return null;
-        currentIndex = index;
-        updateStrongWindow();
-        return getCurrentSlideData();
-    }
-    
-    /** Gets SlideData for a specific index without changing current index. */
-    public SlideData getSlideData(int index) {
-        if (!loaded || index < 0 || index >= totalSlides) return null;
-        byte[] bytes = getSlideBytes(index);
-        if (bytes == null) return null;
-        return new SlideData(bytes, index, totalSlides);
-    }
-
     public boolean isLoaded()      { return loaded; }
     public int getCurrentIndex()   { return currentIndex; }
     public int getTotalSlides()    { return totalSlides; }
@@ -375,28 +359,11 @@ public class PptService {
             case TEXT -> {
                 XSLFTextBox tb = slide.createTextBox();
                 tb.setAnchor(anchor);
-                tb.clearText(); // Remove default paragraphs
                 XSLFTextParagraph para = tb.addNewTextParagraph();
-                
-                if ("CENTER".equals(sd.getTextAlignment())) {
-                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.CENTER);
-                } else if ("RIGHT".equals(sd.getTextAlignment())) {
-                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.RIGHT);
-                } else {
-                    para.setTextAlign(org.apache.poi.sl.usermodel.TextParagraph.TextAlign.LEFT);
-                }
-                if (sd.getLineHeight() > 0) {
-                    para.setLineSpacing(sd.getLineHeight() * 100.0); // POI expects percentage for multiplier
-                }
-                
                 XSLFTextRun run = para.addNewTextRun();
                 run.setText(sd.getText() != null ? sd.getText() : "");
                 run.setFontColor(color);
                 run.setFontSize(sd.getFontSize());
-                run.setFontFamily(sd.getFontFamily());
-                run.setBold(sd.isBold());
-                run.setItalic(sd.isItalic());
-                run.setUnderlined(sd.isUnderline());
             }
         }
     }

@@ -108,6 +108,14 @@ public class LoginScreen {
         joinBtn.selectedProperty().addListener((obs, was, isNow) ->
                 actionButton.setText(isNow ? "Connect to Classroom" : "Start Session"));
 
+        actionButton.setOnAction(e -> {
+            if (roleGroup.getSelectedToggle() == hostBtn) {
+                handleHost(primaryStage, hostPortField);
+            } else {
+                handleJoin(primaryStage, joinIpField, joinPortField, joinNameField);
+            }
+        });
+
         // ── Card Layout ────────────────────────────────────────────────────
         VBox card = new VBox(20,
                 brandingBox,
@@ -118,16 +126,6 @@ public class LoginScreen {
                 actionButton);
         card.setAlignment(Pos.CENTER_LEFT);
         card.getStyleClass().add("login-card");
-
-        actionButton.setOnAction(e -> {
-            if (roleGroup.getSelectedToggle() == hostBtn) {
-                handleHost(primaryStage, hostPortField);
-            } else {
-                handleJoin(primaryStage, joinIpField, joinPortField, joinNameField, actionButton, card);
-            }
-        });
-
-
 
         StackPane root = new StackPane(card);
         root.getStyleClass().add("login-bg");
@@ -158,12 +156,7 @@ public class LoginScreen {
         try {
             server.start();
         } catch (Exception ex) {
-            String msg = ex.getMessage();
-            if (msg != null && msg.toLowerCase().contains("address already in use")) {
-                showError("Server Error", "Port already in use");
-            } else {
-                showError("Server Error", msg);
-            }
+            showError("Server Error", ex.getMessage());
             return;
         }
         teacherUI.show();
@@ -171,13 +164,9 @@ public class LoginScreen {
 
     // ── Join Handler ───────────────────────────────────────────────────────
     private void handleJoin(Stage primaryStage, TextField ipField,
-                            TextField portField, TextField nameField,
-                            Button actionButton, VBox card) {
+                            TextField portField, TextField nameField) {
         String ip   = ipField.getText().trim();
-        String name = nameField.getText().trim().replaceAll("\\p{Cntrl}", "");
-        if (name.length() > 30) {
-            name = name.substring(0, 30);
-        }
+        String name = nameField.getText().trim();
         if (ip.isEmpty()) {
             showError("Missing IP", "Please enter the teacher's IP address.");
             return;
@@ -202,43 +191,16 @@ public class LoginScreen {
             showError("Invalid Port", "Port must be between 1025 and 65535.");
             return;
         }
-        
-        actionButton.setDisable(true);
-        actionButton.setText("Connecting…");
-        
-        ProgressIndicator spinner = new ProgressIndicator();
-        spinner.setMaxSize(24, 24);
-        HBox progressBox = new HBox(10, spinner, new Label("Connecting to classroom..."));
-        progressBox.setAlignment(Pos.CENTER);
-        card.getChildren().add(card.getChildren().size() - 1, progressBox);
-
         StudentUI studentUI = new StudentUI(primaryStage, null);
         StudentClient client = new StudentClient(ip, port, name, studentUI::handleMessage);
         studentUI.setClient(client);
-        
-        javafx.concurrent.Task<Void> task = new javafx.concurrent.Task<Void>() {
-            @Override
-            protected Void call() throws Exception {
-                client.connect();
-                return null;
-            }
-        };
-        
-        task.setOnSucceeded(e -> {
-            card.getChildren().remove(progressBox);
-            studentUI.show();
-        });
-        
-        task.setOnFailed(e -> {
-            card.getChildren().remove(progressBox);
-            actionButton.setDisable(false);
-            actionButton.setText("Connect to Classroom");
-            showError("Connection Failed", task.getException().getMessage());
-        });
-        
-        Thread t = new Thread(task);
-        t.setDaemon(true);
-        t.start();
+        try {
+            client.connect();
+        } catch (Exception ex) {
+            showError("Connection Failed", ex.getMessage());
+            return;
+        }
+        studentUI.show();
     }
 
     // ── Error Dialog ───────────────────────────────────────────────────────
